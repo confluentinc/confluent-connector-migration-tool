@@ -718,7 +718,7 @@ def main():
         print("Next steps:")
         print("1. Verify the new connector is running properly")
         print("2. Check data integrity in BigQuery")
-        print("3. Monitor for any datatype relatedissues")
+        print("3. Monitor for any data type related issues")
         print("="*80)
 
     except APIError as e:
