@@ -5,11 +5,11 @@ This repository provides migration tools to assist in transitioning various Conf
 ## Available Migration Tools
 
 ### HTTP Connectors
-- **HTTP V2 Sink Migration**: Migrate HTTP V1 sink connectors to the new HTTP V2 sink framework
+- **HTTP V2 Sink Migration**: Migrate HTTP V1 sink connectors to the new HTTP V2 sink connectors.
 
 ### BigQuery Connectors
-- **BigQuery Legacy to Storage Write API**: Migrate BigQuery Legacy sink connectors to the new Storage Write API (V2) connectors
-
+- **BigQuery Legacy to Storage Write API**: Migrate BigQuery Legacy sink connectors to the new 
+  Storage Write API (V2) connectors.
 ## Getting Started
 
 Each migration tool is located in its respective directory with detailed instructions:

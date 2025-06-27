@@ -1,6 +1,6 @@
 # BigQuery Legacy to Storage Write API Migration Tool
 
-This tool migrates BigQuery Legacy sink connectors to the new Storage Write API (V2) connectors in Confluent Cloud. The V2 connector provides improved performance, cost efficiency, and better data type support.
+This tool migrates BigQuery Legacy sink connectors to the new Storage Write API (V2) connectors in Confluent Cloud.
 
 ## ⚠️ Important Breaking Changes
 
@@ -19,8 +19,6 @@ The Storage Write API has several breaking changes from the Legacy InsertAll API
 
 ## Prerequisites
 
-- Python 3.6 or higher
-- `requests` library (`pip install requests`)
 - Confluent Cloud account with access to the legacy connector
 - GCP service account with BigQuery permissions
 
@@ -107,5 +105,3 @@ python3 migrate_bigquery_connector.py \
   --environment "env-123456" \
   --cluster_id "lkc-abc123"
 ```
-
-The tool will guide you through the migration process interactively, ensuring a smooth transition from Legacy to Storage Write API connectors.

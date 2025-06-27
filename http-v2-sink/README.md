@@ -1,6 +1,6 @@
 # HTTP V2 Sink Connector Migration Tool
 
-This tool migrates HTTP V1 sink connector to the HTTP V2 sink connector in Confluent Cloud. The V2 connector provides improved performance, better error handling, and enhanced configuration options.
+This tool migrates HTTP V1 sink connector to the HTTP V2 sink connector in Confluent Cloud.
 
 
 ## Steps to Run the Migration Tool
