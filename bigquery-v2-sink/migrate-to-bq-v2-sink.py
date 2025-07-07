@@ -570,7 +570,7 @@ def show_unsupported_configs_warning(unsupported_configs):
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description="Migrate BigQuery Legacy sink connector to Storage Write API.")
+    parser = argparse.ArgumentParser(description="Migrate BigQuery V1 Legacy sink connector to BigQuery V2 Storage Write API Connector.")
     parser.add_argument('--legacy_connector', required=True, help='Name of the Legacy connector')
     parser.add_argument('--environment', required=True, help='Environment ID')
     parser.add_argument('--cluster_id', required=True, help='Cluster ID')
