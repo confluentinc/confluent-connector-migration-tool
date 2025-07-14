@@ -3,10 +3,13 @@ import os
 import json
 from datetime import datetime
 import requests
+import getpass
 
 auth_token = None
 last_poll_time = datetime.now()
 SCRAPPED_PASSWORD_STRING = "****************"
+user_email = None
+user_password = None
 
 class APIError(Exception):
     """Custom exception for API errors."""
@@ -72,6 +75,95 @@ UNSUPPORTED_CONFIGS = {
     "convert.double.special.values": "Double special values conversion is not supported in V2 connector. This handled +Infinity, -Infinity, and NaN conversions.",
     "allow.bigquery.required.field.relaxation": "BigQuery required field relaxation is not supported in V2 connector. This allowed relaxing required field constraints."
 }
+
+
+
+def get_credentials_input():
+    """Handle credentials input with file support."""
+    print("\n" + "="*60)
+    print("🔐 Confluent Cloud Credentials")
+    print("="*60)
+    print("Choose how you want to provide your credentials:")
+    print("1. Environment variables - Set EMAIL and PASSWORD environment variables")
+    print("2. File - Provide path to a JSON file containing credentials (RECOMMENDED)")
+    print("3. Secure input - Enter credentials manually (password hidden)")
+    print()
+    print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
+
+    cred_choice = input("Choose option (1-3, default is 2): ").strip()
+
+    if cred_choice == "2":
+        # Option 2: File (RECOMMENDED)
+        while True:
+            cred_file_path = input("Enter the path to your credentials JSON file: ").strip()
+            if cred_file_path and os.path.exists(cred_file_path):
+                try:
+                    with open(cred_file_path, 'r') as f:
+                        cred_data = json.load(f)
+
+                    email = cred_data.get('email')
+                    password = cred_data.get('password')
+
+                    if email and password:
+                        print(f"✅ Credentials loaded from: {cred_file_path}")
+                        return email, password
+                    else:
+                        print("❌ Invalid credentials file format. Expected: {\"email\": \"...\", \"password\": \"...\"}")
+                        retry = input("Try again? (yes/no): ").strip().lower()
+                        if retry not in ['yes', 'y']:
+                            return get_credentials_secure_input()
+                            break
+                except json.JSONDecodeError as e:
+                    print(f"❌ Invalid JSON format in credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+                        break
+                except Exception as e:
+                    print(f"❌ Error reading credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+                        break
+            else:
+                print("❌ File not found. Please provide a valid file path.")
+                retry = input("Try again? (yes/no): ").strip().lower()
+                if retry not in ['yes', 'y']:
+                    return get_credentials_secure_input()
+                    break
+    elif cred_choice == "3":
+        # Option 3: Secure input
+        return get_credentials_secure_input()
+    else:
+        # Option 1: Environment variables
+        email = os.environ.get("EMAIL")
+        password = os.environ.get("PASSWORD")
+
+        if email and password:
+            print("✅ Credentials loaded from environment variables")
+            print("⚠️  NOTE: Environment variables may be visible in process lists and command history.")
+            return email, password
+        else:
+            print("❌ EMAIL and PASSWORD environment variables not set")
+            print("Falling back to secure input...")
+            return get_credentials_secure_input()
+
+def get_credentials_secure_input():
+    """Get credentials through secure user input (password hidden)."""
+    print("\n📝 Secure Credentials Input")
+    print("Your password will be hidden when typing.")
+
+    email = input("Enter your Confluent Cloud email: ").strip()
+
+    # Use getpass for secure password input (hidden)
+    password = getpass.getpass("Enter your Confluent Cloud password: ")
+
+    if email and password:
+        print("✅ Credentials received securely")
+        return email, password
+    else:
+        print("❌ Email and password cannot be empty")
+        return get_credentials_secure_input()
 
 def show_breaking_changes_warning():
     """Display breaking changes warning to the user."""
@@ -184,26 +276,26 @@ def get_user_inputs(legacy_config):
                 print("❌ Invalid input. Please enter a valid number.")
                 print("   Example: 60 for 1 minute, 300 for 5 minutes")
 
-    # Get auto-create tables preference with numbered options
+    # Get auto-create tables preference with numbered options (changed default to DISABLED)
     print("\n🏗️  Auto Create Tables Configuration:")
-    print("1. NON-PARTITIONED - Creates tables without partitioning")
-    print("2. PARTITION by INGESTION TIME - Creates tables partitioned by ingestion time")
-    print("3. PARTITION by FIELD - Creates tables partitioned by a specific timestamp field")
-    print("4. DISABLED - Disable auto table creation (tables must exist beforehand)")
+    print("1. DISABLED - Disable auto table creation (tables must exist beforehand)")
+    print("2. NON-PARTITIONED - Creates tables without partitioning")
+    print("3. PARTITION by INGESTION TIME - Creates tables partitioned by ingestion time")
+    print("4. PARTITION by FIELD - Creates tables partitioned by a specific timestamp field")
 
-    auto_create_choice = input("Choose auto create tables option (1-4, default is 1): ").strip()
+    auto_create_choice = input("Choose auto create tables option (1-4, default is 1 for DISABLED): ").strip()
     if auto_create_choice == "2":
+        auto_create_tables = "NON-PARTITIONED"
+        print("✅ Auto create tables set to: NON-PARTITIONED")
+    elif auto_create_choice == "3":
         auto_create_tables = "PARTITION by INGESTION TIME"
         print("✅ Auto create tables set to: PARTITION by INGESTION TIME")
-    elif auto_create_choice == "3":
+    elif auto_create_choice == "4":
         auto_create_tables = "PARTITION by FIELD"
         print("✅ Auto create tables set to: PARTITION by FIELD")
-    elif auto_create_choice == "4":
-        auto_create_tables = "DISABLED"
-        print("✅ Auto create tables set to: DISABLED")
     else:
-        auto_create_tables = "NON-PARTITIONED"
-        print("✅ Auto create tables set to: NON-PARTITIONED (default)")
+        auto_create_tables = "DISABLED"
+        print("✅ Auto create tables set to: DISABLED (default)")
 
     # Get partitioning options if auto-create tables is enabled
     partitioning_type = "DAY"  # Default from template
@@ -258,6 +350,49 @@ def get_user_inputs(legacy_config):
                 else:
                     print("❌ Field name cannot be empty. Please try again.")
 
+    # Get topic2table.map configuration for testing
+    print("\n" + "="*60)
+    print("🗺️  Topic to Table Mapping Configuration")
+    print("="*60)
+    print("For testing purposes, you can configure topic2table.map to write to different tables.")
+    print("This allows you to test the migration without affecting your production BigQuery tables.")
+    print()
+
+    # Show existing topic2table.map if configured
+    existing_topic2table_map = legacy_config.get("topic2table.map", "")
+    print(f"Current topic2table.map configuration: {existing_topic2table_map if existing_topic2table_map else '(empty)'}")
+    if existing_topic2table_map:
+        print("This maps your Kafka topics to specific BigQuery tables.")
+    else:
+        print("No topic to table mapping is currently configured.")
+    print()
+
+    print("Options:")
+    print("1. Use existing mapping (if configured)")
+    print("2. Configure new mapping for testing")
+
+    topic2table_choice = input("Choose option (1-2, default is 1): ").strip()
+
+    if topic2table_choice == "2":
+        print("\n📝 Topic to Table Mapping Input")
+        print("Enter the mapping in format: topic1:table1,topic2:table2")
+        print("Example: my-topic:my-test-table,another-topic:another-test-table")
+        print("This will redirect data to test tables instead of production tables.")
+
+        while True:
+            topic2table_map = input("Enter topic2table mapping: ").strip()
+            if topic2table_map:
+                print(f"✅ Topic to table mapping set to: {topic2table_map}")
+                break
+            else:
+                print("❌ Mapping cannot be empty. Please try again.")
+    else:
+        topic2table_map = existing_topic2table_map
+        if existing_topic2table_map:
+            print(f"✅ Using existing topic2table mapping: {existing_topic2table_map}")
+        else:
+            print("✅ No existing mapping found, will use default table names")
+
     # Get date time formatter preference
     print("\n" + "="*50)
     print("📅 Date Time Formatter Configuration")
@@ -287,6 +422,7 @@ def get_user_inputs(legacy_config):
         'auto_create_tables': auto_create_tables,
         'partitioning_type': partitioning_type,
         'timestamp_partition_field_name': timestamp_partition_field_name,
+        'topic2table_map': topic2table_map,
         'use_date_time_formatter': use_date_time_formatter
     }
 
@@ -407,13 +543,16 @@ def get_keyfile_input():
         else:
             raise Exception("Invalid keyfile JSON format")
 
-def get_auth_token(base_url):
+def get_auth_token(base_url, email=None, password=None):
     url = base_url + "api/sessions"
-    email = os.environ.get("EMAIL")
-    password = os.environ.get("PASSWORD")
 
+    # Use provided credentials or get them from environment variables
     if not email or not password:
-        raise APIError("Email or password not found in environment variables")
+        email = os.environ.get("EMAIL")
+        password = os.environ.get("PASSWORD")
+
+        if not email or not password:
+            raise APIError("Email or password not found in environment variables")
 
     json_data = {
         'email': email,
@@ -436,9 +575,9 @@ def get_auth_token(base_url):
         raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
 
 def get_connector_config(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time
+    global auth_token, last_poll_time, user_email, user_password
     if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url)
+        auth_token = get_auth_token(base_url, user_email, user_password)
 
     cookies = {'auth_token': auth_token}
     url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
@@ -457,9 +596,9 @@ def get_connector_config(base_url, env, lkc, connector_name):
         raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
 
 def get_connector_offsets(base_url, env, lkc, connector_name):
-    global auth_token
+    global auth_token, user_email, user_password
     if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url)
+        auth_token = get_auth_token(base_url, user_email, user_password)
 
     headers = {'Authorization': f'Bearer {auth_token}'}
     url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
@@ -477,9 +616,9 @@ def get_connector_offsets(base_url, env, lkc, connector_name):
         raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
 
 def send_create_request(base_url, env, lkc, connector_name, configs, offsets):
-    global auth_token, last_poll_time
+    global auth_token, last_poll_time, user_email, user_password
     if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url)
+        auth_token = get_auth_token(base_url, user_email, user_password)
 
     cookies = {
         'auth_token': auth_token,
@@ -514,9 +653,9 @@ def send_create_request(base_url, env, lkc, connector_name, configs, offsets):
         raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
 
 def get_connector_status(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time
+    global auth_token, last_poll_time, user_email, user_password
     if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url)
+        auth_token = get_auth_token(base_url, user_email, user_password)
         last_poll_time = datetime.now()
 
     cookies = {'auth_token': auth_token}
@@ -585,14 +724,35 @@ def main():
         if not show_breaking_changes_warning():
             return
 
+        # Get credentials after breaking changes warning
+        print("🔐 Setting up Confluent Cloud authentication...")
+        global user_email, user_password, auth_token
+        user_email, user_password = get_credentials_input()
+
+        # Get initial auth token
+        auth_token = get_auth_token(base_url, user_email, user_password)
+
         print("Fetching Legacy connector's status...")
         status = get_connector_status(base_url, env, lkc, connector_name)
         print(f"Connector status for {connector_name}: {status}")
-        if status != "PAUSED":
-            user_input = input("The connector is not paused. There might be data duplication if you continue. Proceed? (yes/no): ")
-            if user_input.lower() != 'yes':
-                print("Migration cancelled.")
-                return
+
+        # Show status-based recommendations
+        if status == "RUNNING":
+            print("\n" + "="*80)
+            print("⚠️  CONNECTOR STATUS WARNING")
+            print("="*80)
+            print("Your legacy connector is currently RUNNING.")
+            print()
+            print("• If you are testing on dummy tables, you can keep the existing connector running")
+            print("• For migrating production tables, it is recommended to pause the V1 connector")
+            print("  to avoid data duplication")
+            print()
+            print("The migration will proceed, but be aware of potential data duplication.")
+            print("="*80)
+        elif status == "PAUSED":
+            print("✅ Legacy connector is paused - safe to proceed with migration")
+        else:
+            print(f"ℹ️  Legacy connector status: {status}")
 
         print("Fetching legacy connector offsets...")
         offsets = get_connector_offsets(base_url, env, lkc, connector_name)
@@ -630,6 +790,10 @@ def main():
             storage_config['partitioning.type'] = user_inputs['partitioning_type']
             if user_inputs['timestamp_partition_field_name']:
                 storage_config['timestamp.partition.field.name'] = user_inputs['timestamp_partition_field_name']
+
+        # Apply topic2table.map configuration
+        if user_inputs['topic2table_map']:
+            storage_config['topic2table.map'] = user_inputs['topic2table_map']
 
         # Apply default values from Storage Write API connector template
         storage_config = apply_defaults(storage_config, user_inputs)
@@ -701,7 +865,11 @@ def main():
         print("\n" + "="*80)
         print("📋 FINAL STORAGE WRITE API CONNECTOR CONFIGURATION")
         print("="*80)
-        print(json.dumps(storage_config, indent=4))
+        # Mask keyfile for display
+        display_config = storage_config.copy()
+        if 'keyfile' in display_config:
+            display_config['keyfile'] = '********'
+        print(json.dumps(display_config, indent=4))
         print("="*80)
 
         user_input = input("\nPlease review the above configuration. Do you want to proceed with creating the Storage Write API connector? (yes/no): ")
@@ -728,6 +896,5 @@ def main():
 
 if __name__ == '__main__':
     base_url = "https://confluent.cloud/"
-    auth_token = get_auth_token(base_url)
     last_poll_time = datetime.now()
     main()

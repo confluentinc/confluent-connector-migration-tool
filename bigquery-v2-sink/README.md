@@ -22,24 +22,48 @@ The Storage Write API has several breaking changes from the Legacy InsertAll API
 - Confluent Cloud account with access to the legacy connector
 - GCP service account with BigQuery permissions
 
+## Quick Start
+
+**Run the migration tool**:
+```bash
+python3 migrate-to-bq-v2-sink.py --legacy_connector "your-connector" --environment "env-123" --cluster_id "lkc-abc"
+```
+
 ## Steps to Run the Migration Tool
 
-### 1. Pause the V1 Sink Connector
-Pause your BigQuery Legacy sink connector in Confluent Cloud. You will get a warning (can proceed after confirmation) if the connector is not paused.
+### 1. Check the V1 Sink Connector Status
+The tool will show the current status of your BigQuery Legacy sink connector.
+- **If testing on dummy tables**: You can keep the existing connector running
+- **For production tables**: It's recommended to pause the V1 connector to avoid data duplication
 
 ### 2. Get Environment Details
 Fetch the environment name and cluster ID from your Kafka cluster's URL in Confluent Cloud.
 
-### 3. Set Environment Variables
-Set your Confluent Cloud credentials as environment variables:
+### 3. Set Credentials
+The tool supports three methods for providing your Confluent Cloud credentials:
+
+#### Option 1: Environment Variables
 ```bash
 export EMAIL="your-email@example.com"
 export PASSWORD="your-password"
 ```
+⚠️ **Security Note**: Environment variables may be visible in process lists and command history.
+
+#### Option 2: Credentials File (RECOMMENDED)
+Create a JSON file with your credentials:
+```json
+{
+  "email": "your-email@example.com",
+  "password": "your-password"
+}
+```
+
+#### Option 3: Secure Input
+Enter credentials interactively when prompted. The password will be hidden when typing.
 
 ### 4. Run the Migration Tool
 ```bash
-python3 migrate_bigquery_connector.py --legacy_connector "<YOUR_LEGACY_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_NAME>" --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
+python3 migrate-to-bq-v2-sink.py --legacy_connector "<YOUR_LEGACY_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_NAME>" --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
 ```
 
 ### 5. Follow the Interactive Prompts
@@ -48,10 +72,12 @@ The tool will guide you through:
 - **Ingestion Mode**: Select from STREAMING, BATCH LOADING, UPSERT, or UPSERT_DELETE
 - **Int8/Int16 Casting**: Choose between FLOAT (default) or INTEGER
 - **Commit Interval**: For BATCH LOADING mode (60-14400 seconds)
-- **Auto Create Tables**: Configure table creation strategy
+- **Auto Create Tables**: Configure table creation strategy (default: DISABLED)
 - **Partitioning**: Set partitioning type and field (if applicable)
+- **Topic to Table Mapping**: Configure for testing without affecting production tables
 - **Date Time Formatter**: Choose between SimpleDateFormat or DateTimeFormatter
 - **GCP Keyfile**: Provide service account credentials
+- **Credentials**: Choose secure method for Confluent Cloud authentication
 
 ### 6. Review and Confirm
 The tool will show the final V2 connector configuration and ask for confirmation before creating the connector.
@@ -65,7 +91,7 @@ The tool will show the final V2 connector configuration and ask for confirmation
 - **UPSERT_DELETE**: For upsert and delete operations (requires key fields)
 
 ### Auto Create Tables Options
-- **DISABLED**: Don't auto-create tables
+- **DISABLED**: Don't auto-create tables (default)
 - **NON-PARTITIONED**: Create tables without partitioning
 - **PARTITION by INGESTION TIME**: Create time-partitioned tables
 - **PARTITION by FIELD**: Create field-partitioned tables
@@ -75,6 +101,14 @@ The tool will show the final V2 connector configuration and ask for confirmation
 - **DAY**: Partition by day
 - **MONTH**: Partition by month
 - **YEAR**: Partition by year
+
+### Topic to Table Mapping
+For testing purposes, you can configure `topic2table.map` to redirect data to different tables:
+- **Use existing mapping**: If already configured in the legacy connector
+- **Configure new mapping**: For testing without affecting production tables
+- **Skip mapping**: Use default table names
+
+Example mapping: `my-topic:my-test-table,another-topic:another-test-table`
 
 ## GCP Service Account Keyfile
 
@@ -91,6 +125,7 @@ The tool supports three methods for providing your GCP service account keyfile:
 - **Breaking Changes**: Review the breaking changes section above before migration
 - **Testing**: Always test with a small dataset first
 - **Monitoring**: Monitor the new connector for any issues after migration
+- **Connector Status**: The tool shows connector status and provides recommendations based on whether you're testing or migrating production data
 
 ## Example Usage
 
@@ -100,8 +135,18 @@ export EMAIL="user@example.com"
 export PASSWORD="your-password"
 
 # Run migration
-python3 migrate_bigquery_connector.py \
+python3 migrate-to-bq-v2-sink.py \
   --legacy_connector "my-legacy-bigquery-connector" \
   --environment "env-123456" \
   --cluster_id "lkc-abc123"
+```
+
+## Example Credentials File
+
+Create a file named `credentials.json`:
+```json
+{
+  "email": "user@example.com",
+  "password": "your-password"
+}
 ```
