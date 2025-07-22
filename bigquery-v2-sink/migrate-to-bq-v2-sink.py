@@ -367,6 +367,12 @@ def get_user_inputs(legacy_config):
         print("No topic to table mapping is currently configured.")
     print()
 
+    print("📚 Topic to Table Mapping Documentation:")
+    print("Map of topics to tables. The required format is comma-separated tuples.")
+    print("For example: <topic-1>:<table-1>,<topic-2>:<table-2>,...")
+    print("Also, if the topic-to-table map doesn't contain the topic for a record, the connector creates a table with the same name as the topic name.")
+    print()
+
     print("Options:")
     print("1. Use existing mapping (if configured)")
     print("2. Configure new mapping for testing")
@@ -392,6 +398,20 @@ def get_user_inputs(legacy_config):
             print(f"✅ Using existing topic2table mapping: {existing_topic2table_map}")
         else:
             print("✅ No existing mapping found, will use default table names")
+
+    # Check if auto-create tables is disabled and provide table creation guidance
+    if auto_create_tables == "DISABLED":
+        print("\n" + "="*60)
+        print("🏗️  Table Creation Guidance")
+        print("="*60)
+        print("Auto-create tables is set to DISABLED. You may need to create tables manually.")
+        print()
+        print("If you need to create tables with the same schema as existing tables, use:")
+        print("CREATE TABLE `project-id.dataset-name.new_table_name`")
+        print("LIKE `project-id.dataset-name.source_table_name`;")
+        print()
+        print("Replace with your actual project ID, dataset name, and table names.")
+        print("="*60)
 
     # Get date time formatter preference
     print("\n" + "="*50)
@@ -785,8 +805,8 @@ def main():
             storage_config['commit.interval'] = user_inputs['commit_interval']
 
         # Apply auto-create tables and related configs
+        storage_config['auto.create.tables'] = user_inputs['auto_create_tables']
         if user_inputs['auto_create_tables'] != 'DISABLED':
-            storage_config['auto.create.tables'] = user_inputs['auto_create_tables']
             storage_config['partitioning.type'] = user_inputs['partitioning_type']
             if user_inputs['timestamp_partition_field_name']:
                 storage_config['timestamp.partition.field.name'] = user_inputs['timestamp_partition_field_name']
