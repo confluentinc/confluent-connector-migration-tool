@@ -325,25 +325,21 @@ def get_credentials_input():
                         retry = input("Try again? (yes/no): ").strip().lower()
                         if retry not in ['yes', 'y']:
                             return get_credentials_secure_input()
-                            break
                 except json.JSONDecodeError as e:
                     print(f"❌ Invalid JSON format in credentials file: {e}")
                     retry = input("Try again? (yes/no): ").strip().lower()
                     if retry not in ['yes', 'y']:
                         return get_credentials_secure_input()
-                        break
                 except Exception as e:
                     print(f"❌ Error reading credentials file: {e}")
                     retry = input("Try again? (yes/no): ").strip().lower()
                     if retry not in ['yes', 'y']:
                         return get_credentials_secure_input()
-                        break
             else:
                 print("❌ File not found. Please provide a valid file path.")
                 retry = input("Try again? (yes/no): ").strip().lower()
                 if retry not in ['yes', 'y']:
                     return get_credentials_secure_input()
-                    break
     elif cred_choice == "3":
         # Option 3: Secure input
         return get_credentials_secure_input()
@@ -410,16 +406,16 @@ def main():
             if user_input.lower() != 'yes':
                 print("Exiting the migration tool...")
                 return
-    
+
         print("Fetching v1 connector offsets...")
         offsets = get_connector_offsets(base_url, env, lkc, connector_name)
-    
+
         print("Fetching V1 connector's config...")
         v1_config = get_connector_config(base_url, env, lkc, connector_name)
-    
+
         print("Transforming V1 connector's config to V2...")
         v2_config = create_v2_config(v1_config)
-    
+
         # Display the V2 configuration and ask for confirmation
         print("\nThe transformed V2 connector configuration is as follows:")
         print(json.dumps(v2_config, indent=4))
@@ -430,7 +426,7 @@ def main():
 
         print("Creating V2 connector with offset set to that of V1 connector...")
         send_create_request(base_url, env, lkc, connector_name, v2_config, offsets)
-    
+
     except APIError as e:
         print(f"Encountered Error: {e}, Status Code: {e.status_code}, Response: {e.response_text}")
     except Exception as e:
