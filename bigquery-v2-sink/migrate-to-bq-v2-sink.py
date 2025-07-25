@@ -7,7 +7,7 @@ import getpass
 
 auth_token = None
 last_poll_time = datetime.now()
-SCRAPPED_PASSWORD_STRING = "****************"
+SCRUBBED_PASSWORD_STRING = "****************"
 user_email = None
 user_password = None
 
@@ -112,25 +112,21 @@ def get_credentials_input():
                         retry = input("Try again? (yes/no): ").strip().lower()
                         if retry not in ['yes', 'y']:
                             return get_credentials_secure_input()
-                            break
                 except json.JSONDecodeError as e:
                     print(f"❌ Invalid JSON format in credentials file: {e}")
                     retry = input("Try again? (yes/no): ").strip().lower()
                     if retry not in ['yes', 'y']:
                         return get_credentials_secure_input()
-                        break
                 except Exception as e:
                     print(f"❌ Error reading credentials file: {e}")
                     retry = input("Try again? (yes/no): ").strip().lower()
                     if retry not in ['yes', 'y']:
                         return get_credentials_secure_input()
-                        break
             else:
                 print("❌ File not found. Please provide a valid file path.")
                 retry = input("Try again? (yes/no): ").strip().lower()
                 if retry not in ['yes', 'y']:
                     return get_credentials_secure_input()
-                    break
     elif cred_choice == "3":
         # Option 3: Secure input
         return get_credentials_secure_input()
@@ -873,7 +869,7 @@ def main():
         storage_config = apply_defaults(storage_config, user_inputs)
 
         # Handle keyfile input specially for large JSON content
-        if "keyfile" in storage_config and storage_config["keyfile"] == SCRAPPED_PASSWORD_STRING:
+        if "keyfile" in storage_config and storage_config["keyfile"] == SCRUBBED_PASSWORD_STRING:
             print("\n" + "="*60)
             print("🔑 GCP Service Account Keyfile Input")
             print("="*60)
@@ -926,7 +922,7 @@ def main():
 
         # Prompt user to input values for other fields with "****************"
         for key, value in storage_config.items():
-            if value == SCRAPPED_PASSWORD_STRING and key != "keyfile":  # Skip keyfile as it's handled above
+            if value == SCRUBBED_PASSWORD_STRING and key != "keyfile":  # Skip keyfile as it's handled above
                 while True:
                     user_input = input(f"Please enter the value for {key}: ").strip()
                     if user_input:
