@@ -3,10 +3,13 @@ import os
 import json
 from datetime import datetime
 import requests
+import getpass
 
 auth_token = None
 last_poll_time = datetime.now()
 SCRAPPED_PASSWORD_STRING = "****************"
+user_email = None
+user_password = None
 
 class APIError(Exception):
     """Custom exception for API errors."""
@@ -153,17 +156,21 @@ def create_v2_config(v1_config):
         print(f"Error: {e}")
         return None
 
-def get_auth_token(base_url):
-    url = base_url + "api/sessions"
-    email = os.environ.get("EMAIL")
-    password = os.environ.get("PASSWORD")
+def get_auth_token(base_url, email=None, password=None):
+    global user_email, user_password
 
-    if not email or not password:
-        raise APIError("Email or password not found in environment variables")
+    # Use provided credentials or get them interactively
+    if email and password:
+        user_email = email
+        user_password = password
+    elif not user_email or not user_password:
+        user_email, user_password = get_credentials_input()
+
+    url = base_url + "api/sessions"
 
     json_data = {
-        'email': email,
-        'password': password
+        'email': user_email,
+        'password': user_password
     }
 
     response = requests.post(url, json=json_data)
@@ -284,37 +291,131 @@ def get_connector_status(base_url, env, lkc, connector_name):
     except json.JSONDecodeError:
         raise APIError(f"Failed to decode JSON for connector status: {connector_name}", response_text=response.text)
 
+def get_credentials_input():
+    """Handle credentials input with file support."""
+    print("\n" + "="*60)
+    print("🔐 Confluent Cloud Credentials")
+    print("="*60)
+    print("Choose how you want to provide your credentials:")
+    print("1. Environment variables - Set EMAIL and PASSWORD environment variables")
+    print("2. File - Provide path to a JSON file containing credentials (RECOMMENDED)")
+    print("3. Secure input - Enter credentials manually (password hidden)")
+    print()
+    print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
+
+    cred_choice = input("Choose option (1-3, default is 1): ").strip()
+
+    if cred_choice == "2":
+        # Option 2: File (RECOMMENDED)
+        while True:
+            cred_file_path = input("Enter the path to your credentials JSON file: ").strip()
+            if cred_file_path and os.path.exists(cred_file_path):
+                try:
+                    with open(cred_file_path, 'r') as f:
+                        cred_data = json.load(f)
+
+                    email = cred_data.get('email')
+                    password = cred_data.get('password')
+
+                    if email and password:
+                        print(f"✅ Credentials loaded from: {cred_file_path}")
+                        return email, password
+                    else:
+                        print("❌ Invalid credentials file format. Expected: {\"email\": \"...\", \"password\": \"...\"}")
+                        retry = input("Try again? (yes/no): ").strip().lower()
+                        if retry not in ['yes', 'y']:
+                            return get_credentials_secure_input()
+                except json.JSONDecodeError as e:
+                    print(f"❌ Invalid JSON format in credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+                except Exception as e:
+                    print(f"❌ Error reading credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+            else:
+                print("❌ File not found. Please provide a valid file path.")
+                retry = input("Try again? (yes/no): ").strip().lower()
+                if retry not in ['yes', 'y']:
+                    return get_credentials_secure_input()
+    elif cred_choice == "3":
+        # Option 3: Secure input
+        return get_credentials_secure_input()
+    else:
+        # Option 1: Environment variables
+        email = os.environ.get("EMAIL")
+        password = os.environ.get("PASSWORD")
+
+        if email and password:
+            print("✅ Credentials loaded from environment variables")
+            print("⚠️  NOTE: Environment variables may be visible in process lists and command history.")
+            return email, password
+        else:
+            print("❌ EMAIL and PASSWORD environment variables not set")
+            print("Falling back to secure input...")
+            return get_credentials_secure_input()
+
+def get_credentials_secure_input():
+    """Get credentials through secure user input (password hidden)."""
+    print("\n📝 Secure Credentials Input")
+    print("Your password will be hidden when typing.")
+
+    email = input("Enter your Confluent Cloud email: ").strip()
+
+    # Use getpass for secure password input (hidden)
+    password = getpass.getpass("Enter your Confluent Cloud password: ")
+
+    if email and password:
+        print("✅ Credentials received securely")
+        return email, password
+    else:
+        print("❌ Email and password cannot be empty")
+        return get_credentials_secure_input()
+
 def main():
     parser = argparse.ArgumentParser(description="Migrate HTTP V1 sink connector to V2.")
     parser.add_argument('--v1_connector', required=True, help='Name of the V1 connector')
     parser.add_argument('--environment', required=True, help='Environment ID')
     parser.add_argument('--cluster_id', required=True, help='Cluster ID')
     args = parser.parse_args()
-    
+
     connector_name = args.v1_connector
     env = args.environment
     lkc = args.cluster_id
-    
+    base_url = "https://confluent.cloud/"
+
     try:
+        print("🔐 Setting up Confluent Cloud authentication...")
+        # Get credentials first
+        global user_email, user_password
+        user_email, user_password = get_credentials_input()
+
+        # Get initial auth token
+        global auth_token, last_poll_time
+        auth_token = get_auth_token(base_url, user_email, user_password)
+        last_poll_time = datetime.now()
+
         print("Fetching V1 connector's status...")
         status = get_connector_status(base_url, env, lkc, connector_name)
         print(f"Connector status for {connector_name}: {status}")
-        if status != "PAUSED": 
+        if status != "PAUSED":
             user_input = input("The connector is not in a paused state. There might be some duplication in the end"
                                " system if you continue. Do you still want to proceed? (yes/no): ")
             if user_input.lower() != 'yes':
                 print("Exiting the migration tool...")
                 return
-    
+
         print("Fetching v1 connector offsets...")
         offsets = get_connector_offsets(base_url, env, lkc, connector_name)
-    
+
         print("Fetching V1 connector's config...")
         v1_config = get_connector_config(base_url, env, lkc, connector_name)
-    
+
         print("Transforming V1 connector's config to V2...")
         v2_config = create_v2_config(v1_config)
-    
+
         # Display the V2 configuration and ask for confirmation
         print("\nThe transformed V2 connector configuration is as follows:")
         print(json.dumps(v2_config, indent=4))
@@ -325,14 +426,11 @@ def main():
 
         print("Creating V2 connector with offset set to that of V1 connector...")
         send_create_request(base_url, env, lkc, connector_name, v2_config, offsets)
-    
+
     except APIError as e:
         print(f"Encountered Error: {e}, Status Code: {e.status_code}, Response: {e.response_text}")
     except Exception as e:
         print(f"An error occurred while running the migration tool: {e}")
 
 if __name__ == '__main__':
-    base_url = "https://confluent.cloud/"
-    auth_token = get_auth_token(base_url)
-    last_poll_time = datetime.now()
     main()
