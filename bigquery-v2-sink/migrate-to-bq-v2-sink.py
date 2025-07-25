@@ -350,54 +350,100 @@ def get_user_inputs(legacy_config):
                 else:
                     print("❌ Field name cannot be empty. Please try again.")
 
-    # Get topic2table.map configuration for testing
+    # Get testing configuration for project, dataset, and topic2table mapping
     print("\n" + "="*60)
-    print("🗺️  Topic to Table Mapping Configuration")
+    print("🧪 Testing Configuration")
     print("="*60)
-    print("For testing purposes, you can configure topic2table.map to write to different tables.")
-    print("This allows you to test the migration without affecting your production BigQuery tables.")
+    print("For testing purposes, you can configure project, dataset, and topic2table mapping")
+    print("to write to different BigQuery resources. This allows you to test the migration")
+    print("without affecting your production BigQuery tables.")
     print()
 
-    # Show existing topic2table.map if configured
+    # Show current configurations
+    current_project = legacy_config.get("project", "")
+    current_dataset = legacy_config.get("datasets", "")  # V1 uses "datasets", V2 uses "defaultDataset"
     existing_topic2table_map = legacy_config.get("topic2table.map", "")
-    print(f"Current topic2table.map configuration: {existing_topic2table_map if existing_topic2table_map else '(empty)'}")
-    if existing_topic2table_map:
-        print("This maps your Kafka topics to specific BigQuery tables.")
-    else:
-        print("No topic to table mapping is currently configured.")
+
+    print("Current configurations:")
+    print(f"• Project: {current_project if current_project else '(not configured)'}")
+    print(f"• Dataset: {current_dataset if current_dataset else '(not configured)'}")
+    print(f"• Topic2Table Map: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
     print()
 
-    print("📚 Topic to Table Mapping Documentation:")
-    print("Map of topics to tables. The required format is comma-separated tuples.")
-    print("For example: <topic-1>:<table-1>,<topic-2>:<table-2>,...")
-    print("Also, if the topic-to-table map doesn't contain the topic for a record, the connector creates a table with the same name as the topic name.")
-    print()
+    testing_choice = input("Do you want to update project, dataset, or topic2table mapping for testing? (yes/no, default is no): ").strip().lower()
 
-    print("Options:")
-    print("1. Use existing mapping (if configured)")
-    print("2. Configure new mapping for testing")
+    # Initialize with current values
+    project_for_migration = current_project
+    dataset_for_migration = current_dataset
+    topic2table_map = existing_topic2table_map
 
-    topic2table_choice = input("Choose option (1-2, default is 1): ").strip()
+    if testing_choice in ['yes', 'y']:
+        print("\n" + "="*50)
+        print("🔧 Testing Configuration Setup")
+        print("="*50)
 
-    if topic2table_choice == "2":
-        print("\n📝 Topic to Table Mapping Input")
-        print("Enter the mapping in format: topic1:table1,topic2:table2")
-        print("Example: my-topic:my-test-table,another-topic:another-test-table")
-        print("This will redirect data to test tables instead of production tables.")
+        # Project configuration
+        print(f"\n📋 Current project: {current_project if current_project else '(not configured)'}")
+        project_update = input("Do you want to update the project for testing? (yes/no): ").strip().lower()
 
-        while True:
-            topic2table_map = input("Enter topic2table mapping: ").strip()
-            if topic2table_map:
-                print(f"✅ Topic to table mapping set to: {topic2table_map}")
-                break
-            else:
-                print("❌ Mapping cannot be empty. Please try again.")
-    else:
-        topic2table_map = existing_topic2table_map
-        if existing_topic2table_map:
-            print(f"✅ Using existing topic2table mapping: {existing_topic2table_map}")
+        if project_update in ['yes', 'y']:
+            while True:
+                new_project = input("Enter new project ID for testing: ").strip()
+                if new_project:
+                    project_for_migration = new_project
+                    print(f"✅ Project set to: {new_project}")
+                    break
+                else:
+                    print("❌ Project ID cannot be empty. Please try again.")
         else:
-            print("✅ No existing mapping found, will use default table names")
+            print(f"✅ Using existing project: {current_project}")
+
+        # Dataset configuration
+        print(f"\n📋 Current dataset: {current_dataset if current_dataset else '(not configured)'}")
+        dataset_update = input("Do you want to update the dataset for testing? (yes/no): ").strip().lower()
+
+        if dataset_update in ['yes', 'y']:
+            while True:
+                new_dataset = input("Enter new dataset name for testing: ").strip()
+                if new_dataset:
+                    dataset_for_migration = new_dataset
+                    print(f"✅ Dataset set to: {new_dataset}")
+                    break
+                else:
+                    print("❌ Dataset name cannot be empty. Please try again.")
+        else:
+            print(f"✅ Using existing dataset: {current_dataset}")
+
+        # Topic2Table mapping configuration
+        print(f"\n📋 Current topic2table mapping: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
+        topic2table_update = input("Do you want to update the topic2table mapping for testing? (yes/no): ").strip().lower()
+
+        if topic2table_update in ['yes', 'y']:
+            print("\n📝 Topic to Table Mapping Input")
+            print("Enter the mapping in format: topic1:table1,topic2:table2")
+            print("Example: my-topic:my-test-table,another-topic:another-test-table")
+            print("This will redirect data to test tables instead of production tables.")
+
+            while True:
+                new_topic2table_map = input("Enter topic2table mapping: ").strip()
+                if new_topic2table_map:
+                    topic2table_map = new_topic2table_map
+                    print(f"✅ Topic to table mapping set to: {new_topic2table_map}")
+                    break
+                else:
+                    print("❌ Mapping cannot be empty. Please try again.")
+        else:
+            print(f"✅ Using existing topic2table mapping: {existing_topic2table_map}")
+
+        print("\n" + "="*50)
+        print("✅ Testing Configuration Summary")
+        print("="*50)
+        print(f"• Project: {project_for_migration}")
+        print(f"• Dataset: {dataset_for_migration}")
+        print(f"• Topic2Table Map: {topic2table_map}")
+        print("="*50)
+    else:
+        print("✅ Using existing configurations for all settings")
 
     # Check if auto-create tables is disabled and provide table creation guidance
     if auto_create_tables == "DISABLED":
@@ -443,6 +489,8 @@ def get_user_inputs(legacy_config):
         'partitioning_type': partitioning_type,
         'timestamp_partition_field_name': timestamp_partition_field_name,
         'topic2table_map': topic2table_map,
+        'project_for_migration': project_for_migration,
+        'dataset_for_migration': dataset_for_migration,
         'use_date_time_formatter': use_date_time_formatter
     }
 
@@ -494,7 +542,7 @@ def transform_legacy_to_storage(legacy_config):
         config_mapping = {
             "topics": "topics",
             "project": "project",
-            "defaultDataset": "defaultDataset",
+            "datasets": "datasets",
             "keyfile": "keyfile",
             "input.data.format": "input.data.format",
             "sanitize.topics": "sanitize.topics",
@@ -814,6 +862,12 @@ def main():
         # Apply topic2table.map configuration
         if user_inputs['topic2table_map']:
             storage_config['topic2table.map'] = user_inputs['topic2table_map']
+
+        # Apply project and dataset configuration
+        if user_inputs['project_for_migration']:
+            storage_config['project'] = user_inputs['project_for_migration']
+        if user_inputs['dataset_for_migration']:
+            storage_config['datasets'] = user_inputs['dataset_for_migration']
 
         # Apply default values from Storage Write API connector template
         storage_config = apply_defaults(storage_config, user_inputs)
