@@ -303,7 +303,7 @@ def get_credentials_input():
     print()
     print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
 
-    cred_choice = input("Choose option (1-3, default is 2): ").strip()
+    cred_choice = input("Choose option (1-3, default is 1): ").strip()
 
     if cred_choice == "2":
         # Option 2: File (RECOMMENDED)
