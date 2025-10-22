@@ -32,7 +32,7 @@ Enter credentials interactively when prompted. The password will be hidden when 
 
 4. **Run the tool** after adding appropriate values:
    ```bash
-   python3 migrate-to-http-v2-sink.py --v1_connector "<YOUR_V1_CONNECTOR_NAME>" --environment <YOUR_ENVIRONMENT_ID> --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
+   python3 migrate-to-http-v2-sink.py --v1_connector "<YOUR_V1_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_ID>" --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
    ```
 
 5. **Follow the interactive prompts**. The tool will guide you through:
