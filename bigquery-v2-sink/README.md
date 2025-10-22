@@ -37,7 +37,7 @@ The tool will show the current status of your BigQuery Legacy sink connector.
 - **For production tables**: It's recommended to pause the V1 connector to avoid data duplication
 
 ### 2. Get Environment Details
-Fetch the environment name and cluster ID from your Kafka cluster's URL in Confluent Cloud.
+Fetch the environment id and cluster ID from your Kafka cluster's URL in Confluent Cloud.
 
 ### 3. Set Credentials
 The tool supports three methods for providing your Confluent Cloud credentials:
@@ -63,7 +63,7 @@ Enter credentials interactively when prompted. The password will be hidden when 
 
 ### 4. Run the Migration Tool
 ```bash
-python3 migrate-to-bq-v2-sink.py --legacy_connector "<YOUR_LEGACY_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_NAME>" --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
+python3 migrate-to-bq-v2-sink.py --legacy_connector "<YOUR_LEGACY_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_ID>" --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
 ```
 
 ### 5. Follow the Interactive Prompts

@@ -7,7 +7,7 @@ This tool migrates HTTP V1 sink connector to the HTTP V2 sink connector in Confl
 
 1. **Pause the V1 sink connector**. You will get a warning (can proceed after confirmation) while running this tool if the connector is not paused.
 
-2. **Fetch the environment name and cluster id** (from your kafka cluster's URL)
+2. **Fetch the environment id and cluster id** (from your kafka cluster's URL)
 
 3. **Set Credentials**. The tool supports three methods for providing your Confluent Cloud credentials:
 
@@ -32,8 +32,7 @@ Enter credentials interactively when prompted. The password will be hidden when 
 
 4. **Run the tool** after adding appropriate values:
    ```bash
-   python3 migrate-to-http-v2-sink.py --v1_connector "<YOUR_V1_CONNECTOR_NAME>" --environment "<YOUR_ENVIRONMENT_NAME>"
-     --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
+   python3 migrate-to-http-v2-sink.py --v1_connector "<YOUR_V1_CONNECTOR_NAME>" --environment <YOUR_ENVIRONMENT_ID> --cluster_id "<YOUR_KAFKA_CLUSTER_ID>"
    ```
 
 5. **Follow the interactive prompts**. The tool will guide you through:
