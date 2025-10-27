@@ -70,7 +70,7 @@ BREAKING_CHANGES = {
 
 # Configurations not supported in V2 Storage Write API connector
 UNSUPPORTED_CONFIGS = {
-    "allow.schema.unionization": "Schema unionization is not supported in V2 connector. This feature allowed combining record schemas with existing BigQuery table schemas.",
+    "allow.schema.unionization": "Schema unionization is not supported in V2 connector. This functionality is now part of the auto.update.schemas property, which handles schema evolution for both primitive and complex types (structs and arrays).",
     "all.bq.fields.nullable": "All BigQuery fields nullable setting is not supported in V2 connector. This controlled whether all fields were made nullable.",
     "convert.double.special.values": "Double special values conversion is not supported in V2 connector. This handled +Infinity, -Infinity, and NaN conversions.",
     "allow.bigquery.required.field.relaxation": "BigQuery required field relaxation is not supported in V2 connector. This allowed relaxing required field constraints."
@@ -543,7 +543,6 @@ def transform_legacy_to_storage(legacy_config):
             "input.data.format": "input.data.format",
             "sanitize.topics": "sanitize.topics",
             "sanitize.field.names": "sanitize.field.names",
-            "auto.update.schemas": "auto.update.schemas",
             "topic2table.map": "topic2table.map",
             "sanitize.field.names.in.array": "sanitize.field.names.in.array"
         }
@@ -552,6 +551,20 @@ def transform_legacy_to_storage(legacy_config):
         for legacy_key, storage_key in config_mapping.items():
             if legacy_key in legacy_config:
                 storage_config[storage_key] = legacy_config[legacy_key]
+
+        # Handle auto.update.schemas transformation from v1 to v2 format
+        if "auto.update.schemas" in legacy_config:
+            v1_value = legacy_config["auto.update.schemas"]
+            if v1_value.lower() == "true":
+                storage_config["auto.update.schemas"] = "ADD NEW FIELDS"
+                print(f"✅ Transformed auto.update.schemas: '{v1_value}' → 'ADD NEW FIELDS'")
+            elif v1_value.lower() == "false":
+                storage_config["auto.update.schemas"] = "DISABLED"
+                print(f"✅ Transformed auto.update.schemas: '{v1_value}' → 'DISABLED'")
+            else:
+                # Handle unexpected values - default to DISABLED for safety
+                print(f"⚠️  Warning: Unexpected auto.update.schemas value '{v1_value}' in legacy config. Defaulting to 'DISABLED'.")
+                storage_config["auto.update.schemas"] = "DISABLED"
 
         # Copy common configurations
         for config_key in common_configs:
@@ -563,7 +576,7 @@ def transform_legacy_to_storage(legacy_config):
             if (config_key not in config_mapping and
                 config_key not in common_configs and
                 config_key not in UNSUPPORTED_CONFIGS and
-                config_key not in ["name", "connector.class", "tasks.max", "authentication.method"]):
+                config_key not in ["name", "connector.class", "tasks.max", "authentication.method", "auto.update.schemas"]):
                 storage_config[config_key] = config_value
 
         # Apply storage defaults for missing configurations
@@ -759,11 +772,31 @@ def show_unsupported_configs_warning(unsupported_configs):
     print("The following configurations are NOT SUPPORTED in V2 connector:")
     print()
 
+    # Check if any schema-related configs are present
+    schema_unionization_config = "allow.schema.unionization"
+    required_field_relaxation_config = "allow.bigquery.required.field.relaxation"
+    has_schema_unionization = schema_unionization_config in unsupported_configs
+    has_required_field_relaxation = required_field_relaxation_config in unsupported_configs
+
     for config_key in unsupported_configs:
         print(f"• {config_key}: {UNSUPPORTED_CONFIGS[config_key]}")
 
     print("\n" + "-"*80)
     print("IMPACT: These configurations will be ignored during migration.")
+
+    if has_schema_unionization:
+        print("\n📋 SCHEMA EVOLUTION IN V2:")
+        print("The V2 connector handles schema evolution through the 'auto.update.schemas' property:")
+        print("• 'DISABLED' - No automatic schema updates")
+        print("• 'ADD NEW FIELDS' - Automatically adds new fields to existing tables")
+        print("This covers both primitive and complex types (structs and arrays).")
+        print("The migration script will set this based on your legacy 'auto.update.schemas' setting.")
+
+    if has_required_field_relaxation:
+        print("\n📋 FIELD NULLABILITY IN V2:")
+        print("All fields created through V2 connector are nullable by default.")
+        print("The 'allow.bigquery.required.field.relaxation' configuration is no longer supported in V2 connector.")
+
     print("-"*80)
 
     user_input = input("\nDo you understand that these configurations will not be migrated? (yes/no): ")
