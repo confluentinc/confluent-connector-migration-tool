@@ -8,14 +8,20 @@ This repository provides migration tools to assist in transitioning various Conf
 - **HTTP V2 Sink Migration**: Migrate HTTP V1 sink connectors to the new HTTP V2 sink connectors.
 
 ### BigQuery Connectors
-- **BigQuery Legacy to Storage Write API**: Migrate BigQuery Legacy sink connectors to the new 
+- **BigQuery Legacy to Storage Write API**: Migrate BigQuery Legacy sink connectors to the new
   Storage Write API (V2) connectors.
+
+### Elasticsearch Connectors
+- **Elasticsearch V2 Sink Migration**: Migrate Elasticsearch Sink V1 connectors to the new
+  Elasticsearch Sink V2 connectors with improved HTTP framework.
+
 ## Getting Started
 
 Each migration tool is located in its respective directory with detailed instructions:
 
 - [`http-v2-sink/`](http-v2-sink/) - HTTP V1 to V2 sink connector migration
 - [`bigquery-v2-sink/`](bigquery-v2-sink/) - BigQuery V1 to V2 sink connector migration
+- [`elasticsearch-v2-sink/`](elasticsearch-v2-sink/) - Elasticsearch V1 to V2 sink connector migration
 
 ## General Migration Process
 

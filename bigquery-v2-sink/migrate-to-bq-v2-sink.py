@@ -1,22 +1,38 @@
+#!/usr/bin/env python3
+"""
+BigQuery Legacy to Storage Write API Migration Tool
+
+This tool migrates BigQuery Legacy (InsertAll API) connectors to BigQuery Storage Write API
+connectors in Confluent Cloud. The Storage Write API offers better performance and cost
+efficiency compared to the Legacy InsertAll API.
+"""
+
 import argparse
 import os
 import json
-from datetime import datetime
-import requests
-import getpass
+import sys
 
-auth_token = None
-last_poll_time = datetime.now()
-SCRUBBED_PASSWORD_STRING = "****************"
-user_email = None
-user_password = None
+# Add parent directory to path for utils import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-class APIError(Exception):
-    """Custom exception for API errors."""
-    def __init__(self, message, status_code=None, response_text=None):
-        super().__init__(message)
-        self.status_code = status_code
-        self.response_text = response_text
+from utils.migration_utils import (
+    BASE_URL,
+    SCRUBBED_PASSWORD_STRING,
+    APIError,
+    get_connector_config,
+    get_connector_offsets,
+    get_connector_status,
+    send_create_request,
+    prompt_for_sensitive_values,
+    display_config_and_confirm,
+    initialize_auth,
+    check_connector_status_and_confirm
+)
+
+
+# ============================================================================
+# Configuration Mappings
+# ============================================================================
 
 # Define the mapping between BigQuery Legacy and Storage Write API configurations
 legacy_to_storage_mapping = {
@@ -77,100 +93,20 @@ UNSUPPORTED_CONFIGS = {
 }
 
 
-
-def get_credentials_input():
-    """Handle credentials input with file support."""
-    print("\n" + "="*60)
-    print("🔐 Confluent Cloud Credentials")
-    print("="*60)
-    print("Choose how you want to provide your credentials:")
-    print("1. Environment variables - Set EMAIL and PASSWORD environment variables")
-    print("2. File - Provide path to a JSON file containing credentials (RECOMMENDED)")
-    print("3. Secure input - Enter credentials manually (password hidden)")
-    print()
-    print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
-
-    cred_choice = input("Choose option (1-3, default is 2): ").strip()
-
-    if cred_choice == "2":
-        # Option 2: File (RECOMMENDED)
-        while True:
-            cred_file_path = input("Enter the path to your credentials JSON file: ").strip()
-            if cred_file_path and os.path.exists(cred_file_path):
-                try:
-                    with open(cred_file_path, 'r') as f:
-                        cred_data = json.load(f)
-
-                    email = cred_data.get('email')
-                    password = cred_data.get('password')
-
-                    if email and password:
-                        print(f"✅ Credentials loaded from: {cred_file_path}")
-                        return email, password
-                    else:
-                        print("❌ Invalid credentials file format. Expected: {\"email\": \"...\", \"password\": \"...\"}")
-                        retry = input("Try again? (yes/no): ").strip().lower()
-                        if retry not in ['yes', 'y']:
-                            return get_credentials_secure_input()
-                except json.JSONDecodeError as e:
-                    print(f"❌ Invalid JSON format in credentials file: {e}")
-                    retry = input("Try again? (yes/no): ").strip().lower()
-                    if retry not in ['yes', 'y']:
-                        return get_credentials_secure_input()
-                except Exception as e:
-                    print(f"❌ Error reading credentials file: {e}")
-                    retry = input("Try again? (yes/no): ").strip().lower()
-                    if retry not in ['yes', 'y']:
-                        return get_credentials_secure_input()
-            else:
-                print("❌ File not found. Please provide a valid file path.")
-                retry = input("Try again? (yes/no): ").strip().lower()
-                if retry not in ['yes', 'y']:
-                    return get_credentials_secure_input()
-    elif cred_choice == "3":
-        # Option 3: Secure input
-        return get_credentials_secure_input()
-    else:
-        # Option 1: Environment variables
-        email = os.environ.get("EMAIL")
-        password = os.environ.get("PASSWORD")
-
-        if email and password:
-            print("✅ Credentials loaded from environment variables")
-            print("⚠️  NOTE: Environment variables may be visible in process lists and command history.")
-            return email, password
-        else:
-            print("❌ EMAIL and PASSWORD environment variables not set")
-            print("Falling back to secure input...")
-            return get_credentials_secure_input()
-
-def get_credentials_secure_input():
-    """Get credentials through secure user input (password hidden)."""
-    print("\n📝 Secure Credentials Input")
-    print("Your password will be hidden when typing.")
-
-    email = input("Enter your Confluent Cloud email: ").strip()
-
-    # Use getpass for secure password input (hidden)
-    password = getpass.getpass("Enter your Confluent Cloud password: ")
-
-    if email and password:
-        print("✅ Credentials received securely")
-        return email, password
-    else:
-        print("❌ Email and password cannot be empty")
-        return get_credentials_secure_input()
+# ============================================================================
+# Helper Functions
+# ============================================================================
 
 def show_breaking_changes_warning():
     """Display breaking changes warning to the user."""
     print("\n" + "="*80)
-    print("⚠️  IMPORTANT: BREAKING API CHANGES")
+    print("IMPORTANT: BREAKING API CHANGES")
     print("="*80)
     print("The BigQuery Storage Write API has breaking changes from the Legacy InsertAll API:")
     print()
 
     for change_type, description in BREAKING_CHANGES.items():
-        print(f"• {change_type}: {description}")
+        print(f"  * {change_type}: {description}")
 
     print("\n" + "-"*80)
     print("RECOMMENDATIONS:")
@@ -184,6 +120,63 @@ def show_breaking_changes_warning():
         print("Migration cancelled due to breaking changes concerns.")
         return False
     return True
+
+
+def check_unsupported_configs(legacy_config):
+    """Check for configurations that are not supported in V2 connector."""
+    found_unsupported = []
+
+    for config_key in UNSUPPORTED_CONFIGS.keys():
+        if config_key in legacy_config:
+            found_unsupported.append(config_key)
+
+    return found_unsupported
+
+
+def show_unsupported_configs_warning(unsupported_configs):
+    """Display warning about unsupported configurations."""
+    if not unsupported_configs:
+        return True
+
+    print("\n" + "="*80)
+    print("UNSUPPORTED CONFIGURATIONS DETECTED")
+    print("="*80)
+    print("The following configurations are NOT SUPPORTED in V2 connector:")
+    print()
+
+    # Check if any schema-related configs are present
+    schema_unionization_config = "allow.schema.unionization"
+    required_field_relaxation_config = "allow.bigquery.required.field.relaxation"
+    has_schema_unionization = schema_unionization_config in unsupported_configs
+    has_required_field_relaxation = required_field_relaxation_config in unsupported_configs
+
+    for config_key in unsupported_configs:
+        print(f"  * {config_key}: {UNSUPPORTED_CONFIGS[config_key]}")
+
+    print("\n" + "-"*80)
+    print("IMPACT: These configurations will be ignored during migration.")
+
+    if has_schema_unionization:
+        print("\nSCHEMA EVOLUTION IN V2:")
+        print("The V2 connector handles schema evolution through the 'auto.update.schemas' property:")
+        print("  * 'DISABLED' - No automatic schema updates")
+        print("  * 'ADD NEW FIELDS' - Automatically adds new fields to existing tables")
+        print("This covers both primitive and complex types (structs and arrays).")
+        print("The migration script will set this based on your legacy 'auto.update.schemas' setting.")
+
+    if has_required_field_relaxation:
+        print("\nFIELD NULLABILITY IN V2:")
+        print("All fields created through V2 connector are nullable by default.")
+        print("The 'allow.bigquery.required.field.relaxation' configuration is no longer supported in V2 connector.")
+
+    print("-"*80)
+
+    user_input = input("\nDo you understand that these configurations will not be migrated? (yes/no): ")
+    if user_input.lower() != 'yes':
+        print("Migration cancelled.")
+        return False
+    return True
+
 
 def get_user_inputs(legacy_config):
     """Get user inputs for new connector configuration."""
@@ -199,14 +192,14 @@ def get_user_inputs(legacy_config):
         if new_connector_name != legacy_config['name']:
             break
         else:
-            print("❌ New connector name must be different from the legacy connector name.")
+            print("New connector name must be different from the legacy connector name.")
 
     # Get ingestion mode with numbered options
-    print("\n📊 Ingestion Mode Selection:")
-    print("1. STREAMING - Lower latency, higher cost")
-    print("2. BATCH LOADING - Higher latency, lower cost")
-    print("3. UPSERT - For upsert operations")
-    print("4. UPSERT_DELETE - For upsert and delete operations")
+    print("\nIngestion Mode Selection:")
+    print("  1. STREAMING - Lower latency, higher cost")
+    print("  2. BATCH LOADING - Higher latency, lower cost")
+    print("  3. UPSERT - For upsert operations")
+    print("  4. UPSERT_DELETE - For upsert and delete operations")
 
     mode_choice = input("Choose ingestion mode (1-4, default is 1 for STREAMING): ").strip()
     if mode_choice == "2":
@@ -221,7 +214,7 @@ def get_user_inputs(legacy_config):
         ingestion_mode = "STREAMING"
 
     # Get Int8/Int16 type casting preference
-    print("\n🔢 Int8/Int16 Type Casting:")
+    print("\nInt8/Int16 Type Casting:")
     print("In the new Storage Write API connector, INT8 (BYTE) and INT16 (SHORT) fields are")
     print("by default cast to FLOAT type in BigQuery. You can choose to cast them to INTEGER instead.")
     print("This affects both auto table creation and schema updates.")
@@ -238,11 +231,11 @@ def get_user_inputs(legacy_config):
     commit_interval = "60"  # Default from template
     if ingestion_mode == "BATCH LOADING":
         print("\n" + "="*60)
-        print("⏱️  Commit Interval Configuration")
+        print("Commit Interval Configuration")
         print("="*60)
         print("For BATCH LOADING mode, you need to set a commit interval.")
         print("This is the interval (in seconds) when the connector attempts to commit streamed records.")
-        print("⚠️  IMPORTANT: On every commit interval, a task calls the CreateWriteStream API")
+        print("IMPORTANT: On every commit interval, a task calls the CreateWriteStream API")
         print("   which is subject to quota limits. Be careful with frequent commits.")
         print()
         print("Valid range: 60 seconds (1 minute) to 14,400 seconds (4 hours)")
@@ -261,37 +254,37 @@ def get_user_inputs(legacy_config):
 
                 if 60 <= interval <= 14400:
                     commit_interval = str(interval)
-                    print(f"✅ Commit interval set to: {commit_interval} seconds")
+                    print(f"Commit interval set to: {commit_interval} seconds")
                     break
                 else:
-                    print(f"❌ Invalid value: {interval}")
+                    print(f"Invalid value: {interval}")
                     print("   Commit interval must be between 60 and 14,400 seconds")
                     print("   Please try again.")
 
             except ValueError:
-                print("❌ Invalid input. Please enter a valid number.")
+                print("Invalid input. Please enter a valid number.")
                 print("   Example: 60 for 1 minute, 300 for 5 minutes")
 
     # Get auto-create tables preference with numbered options (changed default to DISABLED)
-    print("\n🏗️  Auto Create Tables Configuration:")
-    print("1. DISABLED - Disable auto table creation (tables must exist beforehand)")
-    print("2. NON-PARTITIONED - Creates tables without partitioning")
-    print("3. PARTITION by INGESTION TIME - Creates tables partitioned by ingestion time")
-    print("4. PARTITION by FIELD - Creates tables partitioned by a specific timestamp field")
+    print("\nAuto Create Tables Configuration:")
+    print("  1. DISABLED - Disable auto table creation (tables must exist beforehand)")
+    print("  2. NON-PARTITIONED - Creates tables without partitioning")
+    print("  3. PARTITION by INGESTION TIME - Creates tables partitioned by ingestion time")
+    print("  4. PARTITION by FIELD - Creates tables partitioned by a specific timestamp field")
 
     auto_create_choice = input("Choose auto create tables option (1-4, default is 1 for DISABLED): ").strip()
     if auto_create_choice == "2":
         auto_create_tables = "NON-PARTITIONED"
-        print("✅ Auto create tables set to: NON-PARTITIONED")
+        print("Auto create tables set to: NON-PARTITIONED")
     elif auto_create_choice == "3":
         auto_create_tables = "PARTITION by INGESTION TIME"
-        print("✅ Auto create tables set to: PARTITION by INGESTION TIME")
+        print("Auto create tables set to: PARTITION by INGESTION TIME")
     elif auto_create_choice == "4":
         auto_create_tables = "PARTITION by FIELD"
-        print("✅ Auto create tables set to: PARTITION by FIELD")
+        print("Auto create tables set to: PARTITION by FIELD")
     else:
         auto_create_tables = "DISABLED"
-        print("✅ Auto create tables set to: DISABLED (default)")
+        print("Auto create tables set to: DISABLED (default)")
 
     # Get partitioning options if auto-create tables is enabled
     partitioning_type = "DAY"  # Default from template
@@ -299,38 +292,38 @@ def get_user_inputs(legacy_config):
 
     if auto_create_tables in ["PARTITION by INGESTION TIME", "PARTITION by FIELD"]:
         print("\n" + "="*50)
-        print("⏰ Partitioning Type Configuration")
+        print("Partitioning Type Configuration")
         print("="*50)
         print("Choose the time partitioning type for your tables:")
         print()
-        print("1. HOUR - Partition by hour")
-        print("2. DAY - Partition by day")
-        print("3. MONTH - Partition by month")
-        print("4. YEAR - Partition by year")
+        print("  1. HOUR - Partition by hour")
+        print("  2. DAY - Partition by day")
+        print("  3. MONTH - Partition by month")
+        print("  4. YEAR - Partition by year")
         print()
 
         while True:
             partition_choice = input("Choose partitioning type (1-4, default is 2): ").strip()
             if partition_choice == "1":
                 partitioning_type = "HOUR"
-                print("✅ Partitioning type set to: HOUR")
+                print("Partitioning type set to: HOUR")
                 break
             elif partition_choice == "3":
                 partitioning_type = "MONTH"
-                print("✅ Partitioning type set to: MONTH")
+                print("Partitioning type set to: MONTH")
                 break
             elif partition_choice == "4":
                 partitioning_type = "YEAR"
-                print("✅ Partitioning type set to: YEAR")
+                print("Partitioning type set to: YEAR")
                 break
             else:
                 partitioning_type = "DAY"
-                print("✅ Partitioning type set to: DAY (default)")
+                print("Partitioning type set to: DAY (default)")
                 break
 
         if auto_create_tables == "PARTITION by FIELD":
             print("\n" + "="*50)
-            print("📅 Timestamp Partition Field Configuration")
+            print("Timestamp Partition Field Configuration")
             print("="*50)
             print("You selected 'PARTITION by FIELD' which requires specifying a timestamp field.")
             print("This field should contain the timestamp value used for partitioning.")
@@ -341,14 +334,14 @@ def get_user_inputs(legacy_config):
                 timestamp_field = input("Enter the timestamp field name for partitioning: ").strip()
                 if timestamp_field:
                     timestamp_partition_field_name = timestamp_field
-                    print(f"✅ Timestamp partition field set to: {timestamp_field}")
+                    print(f"Timestamp partition field set to: {timestamp_field}")
                     break
                 else:
-                    print("❌ Field name cannot be empty. Please try again.")
+                    print("Field name cannot be empty. Please try again.")
 
     # Get testing configuration for project, dataset, and topic2table mapping
     print("\n" + "="*60)
-    print("🧪 Testing Configuration")
+    print("Testing Configuration")
     print("="*60)
     print("For testing purposes, you can configure project, dataset, and topic2table mapping")
     print("to write to different BigQuery resources. This allows you to test the migration")
@@ -361,9 +354,9 @@ def get_user_inputs(legacy_config):
     existing_topic2table_map = legacy_config.get("topic2table.map", "")
 
     print("Current configurations:")
-    print(f"• Project: {current_project if current_project else '(not configured)'}")
-    print(f"• Dataset: {current_dataset if current_dataset else '(not configured)'}")
-    print(f"• Topic2Table Map: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
+    print(f"  * Project: {current_project if current_project else '(not configured)'}")
+    print(f"  * Dataset: {current_dataset if current_dataset else '(not configured)'}")
+    print(f"  * Topic2Table Map: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
     print()
 
     testing_choice = input("Do you want to update project, dataset, or topic2table mapping for testing? (yes/no, default is no): ").strip().lower()
@@ -375,11 +368,11 @@ def get_user_inputs(legacy_config):
 
     if testing_choice in ['yes', 'y']:
         print("\n" + "="*50)
-        print("🔧 Testing Configuration Setup")
+        print("Testing Configuration Setup")
         print("="*50)
 
         # Project configuration
-        print(f"\n📋 Current project: {current_project if current_project else '(not configured)'}")
+        print(f"\nCurrent project: {current_project if current_project else '(not configured)'}")
         project_update = input("Do you want to update the project for testing? (yes/no): ").strip().lower()
 
         if project_update in ['yes', 'y']:
@@ -387,15 +380,15 @@ def get_user_inputs(legacy_config):
                 new_project = input("Enter new project ID for testing: ").strip()
                 if new_project:
                     project_for_migration = new_project
-                    print(f"✅ Project set to: {new_project}")
+                    print(f"Project set to: {new_project}")
                     break
                 else:
-                    print("❌ Project ID cannot be empty. Please try again.")
+                    print("Project ID cannot be empty. Please try again.")
         else:
-            print(f"✅ Using existing project: {current_project}")
+            print(f"Using existing project: {current_project}")
 
         # Dataset configuration
-        print(f"\n📋 Current dataset: {current_dataset if current_dataset else '(not configured)'}")
+        print(f"\nCurrent dataset: {current_dataset if current_dataset else '(not configured)'}")
         dataset_update = input("Do you want to update the dataset for testing? (yes/no): ").strip().lower()
 
         if dataset_update in ['yes', 'y']:
@@ -403,19 +396,19 @@ def get_user_inputs(legacy_config):
                 new_dataset = input("Enter new dataset name for testing: ").strip()
                 if new_dataset:
                     dataset_for_migration = new_dataset
-                    print(f"✅ Dataset set to: {new_dataset}")
+                    print(f"Dataset set to: {new_dataset}")
                     break
                 else:
-                    print("❌ Dataset name cannot be empty. Please try again.")
+                    print("Dataset name cannot be empty. Please try again.")
         else:
-            print(f"✅ Using existing dataset: {current_dataset}")
+            print(f"Using existing dataset: {current_dataset}")
 
         # Topic2Table mapping configuration
-        print(f"\n📋 Current topic2table mapping: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
+        print(f"\nCurrent topic2table mapping: {existing_topic2table_map if existing_topic2table_map else '(not configured)'}")
         topic2table_update = input("Do you want to update the topic2table mapping for testing? (yes/no): ").strip().lower()
 
         if topic2table_update in ['yes', 'y']:
-            print("\n📝 Topic to Table Mapping Input")
+            print("\nTopic to Table Mapping Input")
             print("Enter the mapping in format: topic1:table1,topic2:table2")
             print("Example: my-topic:my-test-table,another-topic:another-test-table")
             print("This will redirect data to test tables instead of production tables.")
@@ -424,27 +417,27 @@ def get_user_inputs(legacy_config):
                 new_topic2table_map = input("Enter topic2table mapping: ").strip()
                 if new_topic2table_map:
                     topic2table_map = new_topic2table_map
-                    print(f"✅ Topic to table mapping set to: {new_topic2table_map}")
+                    print(f"Topic to table mapping set to: {new_topic2table_map}")
                     break
                 else:
-                    print("❌ Mapping cannot be empty. Please try again.")
+                    print("Mapping cannot be empty. Please try again.")
         else:
-            print(f"✅ Using existing topic2table mapping: {existing_topic2table_map}")
+            print(f"Using existing topic2table mapping: {existing_topic2table_map}")
 
         print("\n" + "="*50)
-        print("✅ Testing Configuration Summary")
+        print("Testing Configuration Summary")
         print("="*50)
-        print(f"• Project: {project_for_migration}")
-        print(f"• Dataset: {dataset_for_migration}")
-        print(f"• Topic2Table Map: {topic2table_map}")
+        print(f"  * Project: {project_for_migration}")
+        print(f"  * Dataset: {dataset_for_migration}")
+        print(f"  * Topic2Table Map: {topic2table_map}")
         print("="*50)
     else:
-        print("✅ Using existing configurations for all settings")
+        print("Using existing configurations for all settings")
 
     # Check if auto-create tables is disabled and provide table creation guidance
     if auto_create_tables == "DISABLED":
         print("\n" + "="*60)
-        print("🏗️  Table Creation Guidance")
+        print("Table Creation Guidance")
         print("="*60)
         print("Auto-create tables is set to DISABLED. You may need to create tables manually.")
         print()
@@ -457,12 +450,12 @@ def get_user_inputs(legacy_config):
 
     # Get date time formatter preference
     print("\n" + "="*50)
-    print("📅 Date Time Formatter Configuration")
+    print("Date Time Formatter Configuration")
     print("="*50)
     print("The 'use.date.time.formatter' setting controls how timestamp values are processed:")
     print()
-    print("• FALSE (default) - Uses SimpleDateFormat for timestamp parsing")
-    print("• TRUE - Uses DateTimeFormatter for better timestamp support")
+    print("  * FALSE (default) - Uses SimpleDateFormat for timestamp parsing")
+    print("  * TRUE - Uses DateTimeFormatter for better timestamp support")
     print()
     print("DateTimeFormatter supports a wider range of timestamp formats and epochs.")
     print("Note: The output might vary between the two formatters for the same input.")
@@ -471,10 +464,10 @@ def get_user_inputs(legacy_config):
     date_formatter_choice = input("Do you want to use DateTimeFormatter? (yes/no, default is no): ").strip().lower()
     if date_formatter_choice in ['yes', 'y']:
         use_date_time_formatter = "true"
-        print("✅ DateTimeFormatter will be used for timestamp processing.")
+        print("DateTimeFormatter will be used for timestamp processing.")
     else:
         use_date_time_formatter = "false"
-        print("✅ SimpleDateFormat will be used for timestamp processing (default).")
+        print("SimpleDateFormat will be used for timestamp processing (default).")
 
     return {
         'new_connector_name': new_connector_name,
@@ -490,9 +483,10 @@ def get_user_inputs(legacy_config):
         'use_date_time_formatter': use_date_time_formatter
     }
 
+
 def apply_defaults(new_config, user_inputs):
     """Apply default values for missing configurations."""
-    print("\n🔧 Applying default values...")
+    print("\nApplying default values...")
 
     # Apply only the true defaults from Storage Write API connector template
     # These are configs that have default_value in config_defs and are not handled by user input
@@ -516,6 +510,7 @@ def apply_defaults(new_config, user_inputs):
         new_config['sanitize.field.names.in.array'] = str(sanitize_field_names).lower()
 
     return new_config
+
 
 def transform_legacy_to_storage(legacy_config):
     """
@@ -557,13 +552,13 @@ def transform_legacy_to_storage(legacy_config):
             v1_value = legacy_config["auto.update.schemas"]
             if v1_value.lower() == "true":
                 storage_config["auto.update.schemas"] = "ADD NEW FIELDS"
-                print(f"✅ Transformed auto.update.schemas: '{v1_value}' → 'ADD NEW FIELDS'")
+                print(f"Transformed auto.update.schemas: '{v1_value}' -> 'ADD NEW FIELDS'")
             elif v1_value.lower() == "false":
                 storage_config["auto.update.schemas"] = "DISABLED"
-                print(f"✅ Transformed auto.update.schemas: '{v1_value}' → 'DISABLED'")
+                print(f"Transformed auto.update.schemas: '{v1_value}' -> 'DISABLED'")
             else:
                 # Handle unexpected values - default to DISABLED for safety
-                print(f"⚠️  Warning: Unexpected auto.update.schemas value '{v1_value}' in legacy config. Defaulting to 'DISABLED'.")
+                print(f"Warning: Unexpected auto.update.schemas value '{v1_value}' in legacy config. Defaulting to 'DISABLED'.")
                 storage_config["auto.update.schemas"] = "DISABLED"
 
         # Copy common configurations
@@ -589,9 +584,10 @@ def transform_legacy_to_storage(legacy_config):
     except Exception as e:
         raise Exception(f"Error transforming Legacy to Storage Write API configuration: {e}") from e
 
+
 def get_keyfile_input():
     """Handle direct keyfile input with better support for large JSON content."""
-    print("\n📝 Direct Keyfile Input")
+    print("\nDirect Keyfile Input")
     print("Paste your GCP service account JSON content below.")
     print("Press Enter twice when finished:")
 
@@ -610,203 +606,81 @@ def get_keyfile_input():
     # Validate that it's valid JSON
     try:
         json.loads(keyfile_content)
-        print("✅ Valid JSON keyfile content received")
+        print("Valid JSON keyfile content received")
         return keyfile_content
     except json.JSONDecodeError as e:
-        print(f"❌ Invalid JSON format: {e}")
+        print(f"Invalid JSON format: {e}")
         retry = input("Try again? (yes/no): ").strip().lower()
         if retry in ['yes', 'y']:
             return get_keyfile_input()
         else:
             raise Exception("Invalid keyfile JSON format")
 
-def get_auth_token(base_url, email=None, password=None):
-    url = base_url + "api/sessions"
 
-    # Use provided credentials or get them from environment variables
-    if not email or not password:
-        email = os.environ.get("EMAIL")
-        password = os.environ.get("PASSWORD")
+def handle_keyfile_input(storage_config):
+    """Handle keyfile input for BigQuery authentication."""
+    if "keyfile" in storage_config and storage_config["keyfile"] == SCRUBBED_PASSWORD_STRING:
+        print("\n" + "="*60)
+        print("GCP Service Account Keyfile Input")
+        print("="*60)
+        print("Choose how you want to provide the keyfile:")
+        print("  1. File path - Provide path to JSON file")
+        print("  2. Environment variable - Set GCP_KEYFILE_PATH environment variable")
+        print("  3. Direct input - Paste the JSON content directly")
 
-        if not email or not password:
-            raise APIError("Email or password not found in environment variables")
+        keyfile_choice = input("Choose option (1-3, default is 1): ").strip()
 
-    json_data = {
-        'email': email,
-        'password': password
-    }
+        if keyfile_choice == "2":
+            # Option 2: Environment variable
+            keyfile_path = os.environ.get("GCP_KEYFILE_PATH")
+            if keyfile_path and os.path.exists(keyfile_path):
+                try:
+                    with open(keyfile_path, 'r') as f:
+                        storage_config["keyfile"] = f.read()
+                    print(f"Keyfile loaded from environment variable: {keyfile_path}")
+                except Exception as e:
+                    print(f"Error reading keyfile from {keyfile_path}: {e}")
+                    storage_config["keyfile"] = get_keyfile_input()
+            else:
+                print("GCP_KEYFILE_PATH environment variable not set or file not found")
+                storage_config["keyfile"] = get_keyfile_input()
+        elif keyfile_choice == "3":
+            # Option 3: Direct input
+            storage_config["keyfile"] = get_keyfile_input()
+        else:
+            # Option 1: File path (default)
+            while True:
+                keyfile_path = input("Enter the path to your GCP service account JSON file: ").strip()
+                if keyfile_path and os.path.exists(keyfile_path):
+                    try:
+                        with open(keyfile_path, 'r') as f:
+                            storage_config["keyfile"] = f.read()
+                        print(f"Keyfile loaded successfully from: {keyfile_path}")
+                        break
+                    except Exception as e:
+                        print(f"Error reading file: {e}")
+                        retry = input("Try again? (yes/no): ").strip().lower()
+                        if retry not in ['yes', 'y']:
+                            storage_config["keyfile"] = get_keyfile_input()
+                            break
+                else:
+                    print("File not found. Please provide a valid file path.")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        storage_config["keyfile"] = get_keyfile_input()
+                        break
 
-    response = requests.post(url, json=json_data)
+    return storage_config
 
-    if not response.ok:
-        raise APIError(f"Failed to get auth token: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
 
-    try:
-        token = response.json().get('token')
-        if not token:
-            raise APIError("Auth token not found in response")
-        return token
-    except json.JSONDecodeError:
-        raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
-
-def get_connector_config(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    cookies = {'auth_token': auth_token}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
-
-    response = requests.get(url, cookies=cookies)
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector config for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response["config"]
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
-
-def get_connector_offsets(base_url, env, lkc, connector_name):
-    global auth_token, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    headers = {'Authorization': f'Bearer {auth_token}'}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
-    response = requests.get(url, headers=headers)
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector offsets for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response["offsets"]
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
-
-def send_create_request(base_url, env, lkc, connector_name, configs, offsets):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    cookies = {
-        'auth_token': auth_token,
-    }
-
-    new_connector_name = configs.get("name")
-
-    json_data = {
-        'name': new_connector_name,
-        'config': configs,
-        'offsets': offsets
-    }
-
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors"
-
-    response = requests.post(
-        url,
-        cookies=cookies,
-        json=json_data,
-    )
-
-    if response.status_code != 201:
-        raise APIError(f"Failed to create connector: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        print(f"Connector '{new_connector_name}' created successfully. Response: {json.dumps(json_response, indent=2)}")
-        return json_response
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
-
-def get_connector_status(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-        last_poll_time = datetime.now()
-
-    cookies = {'auth_token': auth_token}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
-
-    response = requests.get(url, cookies=cookies)
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector status for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response["connector"]["state"]
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector status: {connector_name}", response_text=response.text)
-
-def check_unsupported_configs(legacy_config):
-    """Check for configurations that are not supported in V2 connector."""
-    found_unsupported = []
-
-    for config_key in UNSUPPORTED_CONFIGS.keys():
-        if config_key in legacy_config:
-            found_unsupported.append(config_key)
-
-    return found_unsupported
-
-def show_unsupported_configs_warning(unsupported_configs):
-    """Display warning about unsupported configurations."""
-    if not unsupported_configs:
-        return True
-
-    print("\n" + "="*80)
-    print("⚠️  UNSUPPORTED CONFIGURATIONS DETECTED")
-    print("="*80)
-    print("The following configurations are NOT SUPPORTED in V2 connector:")
-    print()
-
-    # Check if any schema-related configs are present
-    schema_unionization_config = "allow.schema.unionization"
-    required_field_relaxation_config = "allow.bigquery.required.field.relaxation"
-    has_schema_unionization = schema_unionization_config in unsupported_configs
-    has_required_field_relaxation = required_field_relaxation_config in unsupported_configs
-
-    for config_key in unsupported_configs:
-        print(f"• {config_key}: {UNSUPPORTED_CONFIGS[config_key]}")
-
-    print("\n" + "-"*80)
-    print("IMPACT: These configurations will be ignored during migration.")
-
-    if has_schema_unionization:
-        print("\n📋 SCHEMA EVOLUTION IN V2:")
-        print("The V2 connector handles schema evolution through the 'auto.update.schemas' property:")
-        print("• 'DISABLED' - No automatic schema updates")
-        print("• 'ADD NEW FIELDS' - Automatically adds new fields to existing tables")
-        print("This covers both primitive and complex types (structs and arrays).")
-        print("The migration script will set this based on your legacy 'auto.update.schemas' setting.")
-
-    if has_required_field_relaxation:
-        print("\n📋 FIELD NULLABILITY IN V2:")
-        print("All fields created through V2 connector are nullable by default.")
-        print("The 'allow.bigquery.required.field.relaxation' configuration is no longer supported in V2 connector.")
-
-    print("-"*80)
-
-    user_input = input("\nDo you understand that these configurations will not be migrated? (yes/no): ")
-    if user_input.lower() != 'yes':
-        print("Migration cancelled.")
-        return False
-    return True
+# ============================================================================
+# Main Migration Flow
+# ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Migrate BigQuery V1 Legacy sink connector to BigQuery V2 Storage Write API Connector.")
+    parser = argparse.ArgumentParser(
+        description="Migrate BigQuery V1 Legacy sink connector to BigQuery V2 Storage Write API Connector."
+    )
     parser.add_argument('--legacy_connector', required=True, help='Name of the Legacy connector')
     parser.add_argument('--environment', required=True, help='Environment ID')
     parser.add_argument('--cluster_id', required=True, help='Cluster ID')
@@ -817,56 +691,47 @@ def main():
     lkc = args.cluster_id
 
     try:
-        # Show breaking changes warning first
+        # Step 1: Show breaking changes warning
+        print("\n" + "="*80)
+        print("BIGQUERY LEGACY TO STORAGE WRITE API MIGRATION TOOL")
+        print("="*80)
+        print(f"Migrating connector: {connector_name}")
+        print(f"Environment: {env}")
+        print(f"Cluster: {lkc}")
+
         if not show_breaking_changes_warning():
             return
 
-        # Get credentials after breaking changes warning
-        print("🔐 Setting up Confluent Cloud authentication...")
-        global user_email, user_password, auth_token
-        user_email, user_password = get_credentials_input()
+        # Step 2: Get credentials and authenticate
+        initialize_auth(BASE_URL)
 
-        # Get initial auth token
-        auth_token = get_auth_token(base_url, user_email, user_password)
+        # Step 3: Check legacy connector status
+        print("\nFetching Legacy connector status...")
+        status = get_connector_status(BASE_URL, env, lkc, connector_name)
 
-        print("Fetching Legacy connector's status...")
-        status = get_connector_status(base_url, env, lkc, connector_name)
-        print(f"Connector status for {connector_name}: {status}")
+        if not check_connector_status_and_confirm(status, connector_name):
+            return
 
-        # Show status-based recommendations
-        if status == "RUNNING":
-            print("\n" + "="*80)
-            print("⚠️  CONNECTOR STATUS WARNING")
-            print("="*80)
-            print("Your legacy connector is currently RUNNING.")
-            print()
-            print("• If you are testing on dummy tables, you can keep the existing connector running")
-            print("• For migrating production tables, it is recommended to pause the V1 connector")
-            print("  to avoid data duplication")
-            print()
-            print("The migration will proceed, but be aware of potential data duplication.")
-            print("="*80)
-        elif status == "PAUSED":
-            print("✅ Legacy connector is paused - safe to proceed with migration")
-        else:
-            print(f"ℹ️  Legacy connector status: {status}")
+        # Step 4: Fetch legacy config and offsets
+        print("\nFetching legacy connector offsets...")
+        offsets = get_connector_offsets(BASE_URL, env, lkc, connector_name)
+        print(f"Retrieved {len(offsets)} offset entries")
 
-        print("Fetching legacy connector offsets...")
-        offsets = get_connector_offsets(base_url, env, lkc, connector_name)
+        print("Fetching Legacy connector configuration...")
+        legacy_config = get_connector_config(BASE_URL, env, lkc, connector_name)
+        print(f"Retrieved {len(legacy_config)} configuration properties")
 
-        print("Fetching Legacy connector's config...")
-        legacy_config = get_connector_config(base_url, env, lkc, connector_name)
-
-        # Check for unsupported configurations
-        print("Checking for unsupported configurations...")
+        # Step 5: Check for unsupported configs
+        print("\nChecking for unsupported configurations...")
         unsupported_configs = check_unsupported_configs(legacy_config)
         if not show_unsupported_configs_warning(unsupported_configs):
             return
 
-        # Get user inputs for new connector configuration
+        # Step 6: Get user inputs for new connector configuration
         user_inputs = get_user_inputs(legacy_config)
 
-        print("Transforming Legacy connector's config to Storage Write API...")
+        # Step 7: Transform legacy -> storage config
+        print("\nTransforming Legacy configuration to Storage Write API...")
         storage_config = transform_legacy_to_storage(legacy_config)
 
         # Update connector name with user input
@@ -901,103 +766,62 @@ def main():
         # Apply default values from Storage Write API connector template
         storage_config = apply_defaults(storage_config, user_inputs)
 
-        # Handle keyfile input specially for large JSON content
-        if "keyfile" in storage_config and storage_config["keyfile"] == SCRUBBED_PASSWORD_STRING:
-            print("\n" + "="*60)
-            print("🔑 GCP Service Account Keyfile Input")
-            print("="*60)
-            print("Choose how you want to provide the keyfile:")
-            print("1. File path - Provide path to JSON file")
-            print("2. Environment variable - Set GCP_KEYFILE_PATH environment variable")
-            print("3. Direct input - Paste the JSON content directly")
+        # Step 8: Handle keyfile input
+        storage_config = handle_keyfile_input(storage_config)
 
-            keyfile_choice = input("Choose option (1-3, default is 1): ").strip()
+        # Step 9: Prompt for any other masked sensitive values
+        storage_config = prompt_for_sensitive_values(
+            storage_config,
+            SCRUBBED_PASSWORD_STRING,
+            skip_keys=["keyfile"]  # Already handled
+        )
 
-            if keyfile_choice == "2":
-                # Option 2: Environment variable
-                keyfile_path = os.environ.get("GCP_KEYFILE_PATH")
-                if keyfile_path and os.path.exists(keyfile_path):
-                    try:
-                        with open(keyfile_path, 'r') as f:
-                            storage_config["keyfile"] = f.read()
-                        print(f"✅ Keyfile loaded from environment variable: {keyfile_path}")
-                    except Exception as e:
-                        print(f"❌ Error reading keyfile from {keyfile_path}: {e}")
-                        storage_config["keyfile"] = get_keyfile_input()
-                else:
-                    print("❌ GCP_KEYFILE_PATH environment variable not set or file not found")
-                    storage_config["keyfile"] = get_keyfile_input()
-            elif keyfile_choice == "3":
-                # Option 3: Direct input
-                storage_config["keyfile"] = get_keyfile_input()
-            else:
-                # Option 1: File path (default)
-                while True:
-                    keyfile_path = input("Enter the path to your GCP service account JSON file: ").strip()
-                    if keyfile_path and os.path.exists(keyfile_path):
-                        try:
-                            with open(keyfile_path, 'r') as f:
-                                storage_config["keyfile"] = f.read()
-                            print(f"✅ Keyfile loaded successfully from: {keyfile_path}")
-                            break
-                        except Exception as e:
-                            print(f"❌ Error reading file: {e}")
-                            retry = input("Try again? (yes/no): ").strip().lower()
-                            if retry not in ['yes', 'y']:
-                                storage_config["keyfile"] = get_keyfile_input()
-                                break
-                    else:
-                        print("❌ File not found. Please provide a valid file path.")
-                        retry = input("Try again? (yes/no): ").strip().lower()
-                        if retry not in ['yes', 'y']:
-                            storage_config["keyfile"] = get_keyfile_input()
-                            break
+        # Step 10: Display final config for confirmation
+        mask_keys = ["keyfile", "kafka.api.secret", "schema.registry.basic.auth.user.info"]
 
-        # Prompt user to input values for other fields with "****************"
-        for key, value in storage_config.items():
-            if value == SCRUBBED_PASSWORD_STRING and key != "keyfile":  # Skip keyfile as it's handled above
-                while True:
-                    user_input = input(f"Please enter the value for {key}: ").strip()
-                    if user_input:
-                        storage_config[key] = user_input
-                        break
-                    else:
-                        print("Input cannot be empty. Please try again.")
-
-        # Display the Storage Write API configuration and ask for confirmation
-        print("\n" + "="*80)
-        print("📋 FINAL STORAGE WRITE API CONNECTOR CONFIGURATION")
-        print("="*80)
-        # Mask keyfile for display
-        display_config = storage_config.copy()
-        if 'keyfile' in display_config:
-            display_config['keyfile'] = '********'
-        print(json.dumps(display_config, indent=4))
-        print("="*80)
-
-        user_input = input("\nPlease review the above configuration. Do you want to proceed with creating the Storage Write API connector? (yes/no): ")
-        if user_input.lower() != 'yes':
+        if not display_config_and_confirm(storage_config,
+                                           "Do you want to proceed with creating the Storage Write API connector?",
+                                           mask_keys=mask_keys):
             print("Migration cancelled.")
             return
 
-        print("Creating Storage Write API connector...")
-        send_create_request(base_url, env, lkc, user_inputs['new_connector_name'], storage_config, offsets)
+        # Step 11: Create Storage Write API connector with preserved offsets
+        print("\nCreating Storage Write API connector with preserved offsets...")
+        send_create_request(BASE_URL, env, lkc, user_inputs['new_connector_name'], storage_config, offsets)
 
+        # Step 12: Show next steps
         print("\n" + "="*80)
-        print("✅ MIGRATION COMPLETED SUCCESSFULLY")
+        print("MIGRATION COMPLETED SUCCESSFULLY")
         print("="*80)
-        print("Next steps:")
-        print("1. Verify the new connector is running properly")
-        print("2. Check data integrity in BigQuery")
-        print("3. Monitor for any data type related issues")
+        print("\nNext steps:")
+        print("  1. Verify the new connector is running properly in Confluent Cloud Console")
+        print("  2. Check data integrity in BigQuery")
+        print("  3. Monitor for any data type related issues")
+        print("  4. Once verified, you can delete the old Legacy connector")
+        print()
+        print("IMPORTANT: The Storage Write API connector starts from the preserved Legacy offsets,")
+        print("so no data should be duplicated or lost.")
         print("="*80)
 
     except APIError as e:
-        print(f"Encountered Error: {e}, Status Code: {e.status_code}, Response: {e.response_text}")
+        print(f"\nAPI Error: {e}")
+        if e.status_code:
+            print(f"Status Code: {e.status_code}")
+        if e.response_text:
+            print(f"Response: {e.response_text}")
+        sys.exit(1)
+    except ValueError as e:
+        print(f"\nValidation Error: {e}")
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n\nMigration cancelled by user.")
+        sys.exit(1)
     except Exception as e:
-        print(f"An error occurred while running the migration tool: {e}")
+        print(f"\nUnexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
 
 if __name__ == '__main__':
-    base_url = "https://confluent.cloud/"
-    last_poll_time = datetime.now()
     main()
