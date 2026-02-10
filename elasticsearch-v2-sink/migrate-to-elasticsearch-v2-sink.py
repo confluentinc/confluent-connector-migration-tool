@@ -66,6 +66,7 @@ BREAKING_CHANGES = {
     "RESOURCE_CREATION": "V2 creates resources and mappings together when 'auto.create=true'. This differs from V1's behavior.",
     "BATCH_SIZE_DEFAULT": "V1 default batch.size=2000, V2 default=50. Your current setting will be preserved.",
     "DATA_STREAM_TYPE_DEFAULT": "V1 default data.stream.type=NONE, V2 default=LOGS. 'NONE' will be converted to 'LOGS'.",
+    "BEHAVIOR_ON_MALFORMED_DOCS": "V2 only supports 'ignore' and 'fail' for behavior.on.malformed.documents. 'warn' is not supported and will be converted to 'ignore'.",
 }
 
 
@@ -221,14 +222,185 @@ def derive_v2_properties(v1_config):
     }
 
 
-def get_user_inputs(v1_config, derived):
+def ask_migration_mode():
+    """
+    Ask user whether to run in test mode or production mode.
+
+    Returns:
+        str: 'test' or 'production'
+    """
+    print("\n" + "="*60)
+    print("Migration Mode Selection")
+    print("="*60)
+    print("Choose migration mode:")
+    print()
+    print("  1. PRODUCTION - Standard migration (recommended for final migration)")
+    print("     * auto.create derived from V1 config")
+    print("     * topic.to.resource.mapping copied from V1 (if exists)")
+    print()
+    print("  2. TEST - Create test connector to validate before final migration")
+    print("     * auto.create will be set to 'false'")
+    print("     * You must provide topic-to-index mapping")
+    print("     * Allows testing with subset of topics")
+    print()
+
+    while True:
+        choice = input("Choose mode (1-2, default is 1): ").strip()
+        if choice == "" or choice == "1":
+            print("Using PRODUCTION mode.")
+            return 'production'
+        elif choice == "2":
+            print("Using TEST mode.")
+            return 'test'
+        else:
+            print("Invalid choice. Please enter 1 or 2.")
+
+
+def get_test_mode_configuration(v1_config):
+    """
+    Get configuration for test mode migration.
+
+    In test mode:
+    - auto.create is always false
+    - User must provide topic.to.resource.mapping
+    - Validates mapping topics match topics config
+    - Allows updating topics config for subset testing
+
+    Returns:
+        dict: {
+            'topics': str,
+            'topic_to_resource_mapping': str
+        }
+    """
+    print("\n" + "="*60)
+    print("Test Mode Configuration")
+    print("="*60)
+
+    # Show current topics
+    topics_str = v1_config.get("topics", "")
+    print(f"Current topics: {topics_str if topics_str else '(not configured)'}")
+    print()
+
+    # Step 1: Ask if user wants to update topics (for testing subset)
+    print("You can update the topics config to test with a subset of topics.")
+    update_topics = input("Do you want to update the topics config? (yes/no, default is no): ").strip().lower()
+
+    if update_topics in ['yes', 'y']:
+        while True:
+            new_topics = input("Enter topics (comma-separated): ").strip()
+            if new_topics:
+                topics_str = new_topics
+                print(f"Topics updated to: {topics_str}")
+                break
+            print("Topics cannot be empty.")
+
+    # Parse topics for validation
+    topics_list = [t.strip() for t in topics_str.split(",") if t.strip()]
+
+    # Step 2: Get topic-to-index mapping
+    print()
+    print("Enter topic-to-index mapping.")
+    print("Format: topic1:index1,topic2:index2")
+    print(f"Topics to map: {', '.join(topics_list)}")
+    print()
+
+    while True:
+        mapping_input = input("Enter topic-to-index mapping: ").strip()
+        if not mapping_input:
+            print("Mapping cannot be empty in test mode.")
+            continue
+
+        # Parse and validate mapping
+        mapping_topics = set()
+        valid_format = True
+        for pair in mapping_input.split(","):
+            pair = pair.strip()
+            if ":" not in pair:
+                print(f"Invalid format '{pair}'. Expected 'topic:index'")
+                valid_format = False
+                break
+            topic, _ = pair.split(":", 1)
+            mapping_topics.add(topic.strip())
+
+        if not valid_format:
+            continue
+
+        # Validate: mapping topics must match topics config exactly
+        topics_set = set(topics_list)
+
+        missing_in_mapping = topics_set - mapping_topics
+        extra_in_mapping = mapping_topics - topics_set
+
+        if missing_in_mapping:
+            print(f"\nError: These topics are in 'topics' config but missing from mapping:")
+            print(f"  {', '.join(missing_in_mapping)}")
+            print("All topics must have a mapping. Please try again.")
+            continue
+
+        if extra_in_mapping:
+            print(f"\nError: These topics are in mapping but not in 'topics' config:")
+            print(f"  {', '.join(extra_in_mapping)}")
+            print("Please try again with correct topics.")
+            continue
+
+        break
+
+    print(f"\nTest mode configuration:")
+    print(f"  * auto.create: false")
+    print(f"  * topics: {topics_str}")
+    print(f"  * topic.to.resource.mapping: {mapping_input}")
+
+    return {
+        'topics': topics_str,
+        'topic_to_resource_mapping': mapping_input
+    }
+
+
+def apply_test_mode_overrides(v2_config, test_config):
+    """
+    Apply test mode overrides to V2 configuration.
+
+    Overrides:
+    - auto.create = false
+    - topics = user-provided topics
+    - topic.to.resource.mapping = user-provided mapping
+
+    Args:
+        v2_config: V2 configuration dict from transform_v1_to_v2()
+        test_config: Test mode configuration from get_test_mode_configuration()
+
+    Returns:
+        tuple: (updated v2_config, list of override warnings)
+    """
+    warnings = []
+
+    # Override auto.create
+    v2_config["auto.create"] = "false"
+    warnings.append("Test mode: auto.create set to 'false'")
+
+    # Override topics
+    v2_config["topics"] = test_config['topics']
+    warnings.append(f"Test mode: topics set to '{test_config['topics']}'")
+
+    # Override topic.to.resource.mapping
+    v2_config["topic.to.resource.mapping"] = test_config['topic_to_resource_mapping']
+    warnings.append(f"Test mode: topic.to.resource.mapping set to '{test_config['topic_to_resource_mapping']}'")
+
+    return v2_config, warnings
+
+
+def get_user_inputs(v1_config, derived, migration_mode='production'):
     """Collect user inputs for V2 configuration."""
     print("\n" + "="*60)
     print("MIGRATION CONFIGURATION")
     print("="*60)
 
-    # 1. New connector name
-    default_name = f"{v1_config.get('name', 'elasticsearch-sink')}-v2"
+    # 1. New connector name (based on migration mode)
+    v1_name = v1_config.get('name', 'elasticsearch-sink')
+    if migration_mode == 'test':
+        default_name = f"{v1_name}-test-v2"
+    else:
+        default_name = f"{v1_name}-v2"
     while True:
         new_name = input(f"\nEnter new connector name (default: {default_name}): ").strip() or default_name
         if new_name != v1_config.get('name'):
@@ -385,6 +557,14 @@ def transform_v1_to_v2(v1_config, user_inputs, derived):
             v2_config["data.stream.type"] = "LOGS"
             warnings.append("Changed 'data.stream.type' from 'NONE' to 'LOGS'. 'NONE' is no longer supported in V2. 'LOGS' is the new default and only applies when resource.type is DATASTREAM. This will not cause any issues during migration.")
 
+    # Handle behavior.on.malformed.documents: V2 only supports 'ignore' and 'fail'
+    # 'warn' is not supported in V2, convert to 'ignore'
+    if "behavior.on.malformed.documents" in v2_config:
+        malformed_behavior = v2_config["behavior.on.malformed.documents"]
+        if malformed_behavior and malformed_behavior.upper() == "WARN":
+            v2_config["behavior.on.malformed.documents"] = "IGNORE"
+            warnings.append("Changed 'behavior.on.malformed.documents' from 'warn' to 'ignore'. 'warn' is not supported in V2. Only 'ignore' and 'fail' are valid options.")
+
     return v2_config, warnings
 
 
@@ -460,30 +640,43 @@ def main():
             if not show_ssl_file_warning(ssl_files):
                 return
 
-        # Step 6: Derive V2 properties
+        # Step 6: Choose migration mode
+        migration_mode = ask_migration_mode()
+
+        # Step 6b: Get test mode configuration if applicable
+        test_config = None
+        if migration_mode == 'test':
+            test_config = get_test_mode_configuration(v1_config)
+
+        # Step 7: Derive V2 properties
         print("\nDeriving V2 properties from V1 configuration...")
         derived = derive_v2_properties(v1_config)
         print(f"  - SSL enabled: {derived['ssl_enabled']}")
         print(f"  - Auto create: {derived['auto_create']}")
         print(f"  - Resource type: {derived['resource_type']}")
 
-        # Step 7: Get user inputs for V2 properties
-        user_inputs = get_user_inputs(v1_config, derived)
+        # Step 8: Get user inputs for V2 properties
+        user_inputs = get_user_inputs(v1_config, derived, migration_mode)
 
-        # Step 8: Transform V1 -> V2 config
+        # Step 9: Transform V1 -> V2 config
         print("\nTransforming V1 configuration to V2...")
         v2_config, warnings = transform_v1_to_v2(v1_config, user_inputs, derived)
 
+        # Step 9b: Apply test mode overrides if applicable
+        if test_config:
+            v2_config, test_warnings = apply_test_mode_overrides(v2_config, test_config)
+            warnings.extend(test_warnings)
+
         display_transformation_warnings(warnings)
 
-        # Step 9: Prompt for any masked sensitive values
+        # Step 10: Prompt for any masked sensitive values
         v2_config = prompt_for_sensitive_values(
             v2_config,
             SCRUBBED_PASSWORD_STRING,
             skip_keys=["connection.password"]  # Already handled
         )
 
-        # Step 10: Display final config for confirmation
+        # Step 11: Display final config for confirmation
         mask_keys = ["connection.password", "api.key.value", "kafka.api.secret",
                      "schema.registry.basic.auth.user.info"]
 
@@ -493,11 +686,11 @@ def main():
             print("Migration cancelled.")
             return
 
-        # Step 11: Create V2 connector with preserved offsets
+        # Step 12: Create V2 connector with preserved offsets
         print("\nCreating V2 connector with preserved offsets...")
         send_create_request(BASE_URL, env, lkc, user_inputs['new_connector_name'], v2_config, offsets)
 
-        # Step 12: Show next steps
+        # Step 13: Show next steps
         print("\n" + "="*80)
         print("MIGRATION COMPLETED SUCCESSFULLY")
         print("="*80)
