@@ -59,9 +59,6 @@ BREAKING_CHANGES = {
     "CONNECTION_URL": "V1 supported multiple URLs (comma-separated), V2 supports only a single URL. If multiple URLs are configured, you will be prompted to enter which URL to use.",
     "DELETE_HANDLING": "V2 requires a valid document '_id' for DELETE operations. This only applies when 'key.ignore=false'. Ensure your records have proper keys when using 'behavior.on.null.values=delete'.",
     "ERROR_ROUTING": "V2 uses error topics instead of DLQ for error handling. Review your error handling strategy after migration.",
-    "RESOURCE_CREATION": "V2 creates resources and mappings together when 'auto.create=true'. This differs from V1's behavior.",
-    "BATCH_SIZE_DEFAULT": "V1 default batch.size=2000, V2 default=50. Your current setting will be preserved.",
-    "DATA_STREAM_TYPE_DEFAULT": "V1 default data.stream.type=NONE, V2 default=LOGS. 'NONE' will be converted to 'LOGS'.",
     "BEHAVIOR_ON_MALFORMED_DOCS": "V2 only supports 'ignore' and 'fail' for behavior.on.malformed.documents. 'warn' is not supported and will be converted to 'ignore'.",
 }
 
