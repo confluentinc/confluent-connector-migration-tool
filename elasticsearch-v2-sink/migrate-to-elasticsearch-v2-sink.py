@@ -45,12 +45,6 @@ DISCONTINUED = {
     "external.resource.usage": "Split into 'auto.create' + 'resource.type' in V2 (derived automatically during migration).",
 }
 
-# SSL file configs that require manual upload via Cloud Console
-SSL_FILE_CONFIGS = [
-    "elastic.https.ssl.keystore.file",
-    "elastic.https.ssl.truststore.file",
-]
-
 # ============================================================================
 # Breaking Changes
 # ============================================================================
@@ -103,20 +97,6 @@ def check_discontinued_configs(v1_config):
     return found_discontinued
 
 
-def check_ssl_file_configs(v1_config):
-    """Check if connector uses SSL file configs that require manual migration."""
-    ssl_files_used = []
-    for config_key in SSL_FILE_CONFIGS:
-        value = v1_config.get(config_key, "")
-        # Non-empty and not just whitespace means SSL files are configured
-        if value and value.strip() and value != "****************":
-            ssl_files_used.append(config_key)
-        # If masked, it means files were uploaded
-        elif value == "****************":
-            ssl_files_used.append(config_key)
-    return ssl_files_used
-
-
 def show_discontinued_configs_warning(discontinued_configs, v1_config):
     """Display warning about discontinued configurations."""
     if not discontinued_configs:
@@ -143,43 +123,6 @@ def show_discontinued_configs_warning(discontinued_configs, v1_config):
         print("Migration cancelled.")
         return False
     return True
-
-
-def show_ssl_file_warning(ssl_files_used):
-    """Display warning about SSL file configs and get user decision."""
-    print("\n" + "="*80)
-    print("SSL FILE CONFIGURATION DETECTED")
-    print("="*80)
-    print("Your V1 connector uses SSL file configurations:")
-    print()
-    for config in ssl_files_used:
-        print(f"  - {config}")
-    print()
-    print("IMPORTANT: This script cannot upload SSL keystore/truststore files.")
-    print("File uploads are only supported through the Confluent Cloud UI.")
-    print()
-    print("You have two options:")
-    print()
-    print("  1. CONTINUE with migration")
-    print("     - V2 connector will be created WITHOUT the SSL files")
-    print("     - You must manually upload SSL files via Cloud Console after creation")
-    print()
-    print("  2. CANCEL and create connector manually")
-    print("     - Exit this script")
-    print("     - Create the V2 connector from scratch via Confluent Cloud Console")
-    print("     - This allows you to upload SSL files during connector creation")
-    print("="*80)
-
-    while True:
-        choice = input("\nChoose (1-2): ").strip()
-        if choice == "1":
-            print("\nProceeding with migration. Remember to upload SSL files manually after creation.")
-            return True
-        elif choice == "2":
-            print("\nMigration cancelled. Please create the connector manually via Cloud Console.")
-            return False
-        else:
-            print("Invalid choice. Please enter 1 or 2.")
 
 
 def derive_v2_properties(v1_config):
@@ -626,12 +569,6 @@ def main():
         discontinued_configs = check_discontinued_configs(v1_config)
         if discontinued_configs:
             if not show_discontinued_configs_warning(discontinued_configs, v1_config):
-                return
-
-        # Step 5b: Check for SSL file configs
-        ssl_files = check_ssl_file_configs(v1_config)
-        if ssl_files:
-            if not show_ssl_file_warning(ssl_files):
                 return
 
         # Step 6: Choose migration mode
