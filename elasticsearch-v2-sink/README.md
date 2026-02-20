@@ -19,8 +19,7 @@ The V2 connector has several breaking changes from V1:
 | **Connection URL** | V1 supported multiple URLs (comma-separated), V2 supports only a single URL |
 | **DELETE Handling** | V2 requires a valid document `_id` for DELETE operations |
 | **Error Routing** | V2 uses error topics instead of DLQ |
-| **Resource Creation** | V2 creates resources and mappings together when `auto.create=true` |
-| **key.ignore Type** | V1 uses STRING, V2 uses BOOLEAN (auto-converted during migration) |
+| **Behavior on Malformed Docs** | V2 only supports `ignore` and `fail`. The value `warn` will be automatically converted to `ignore` |
 
 ### New V2 Properties
 
@@ -135,10 +134,13 @@ The tool will guide you through:
 2. **Authentication**: Provide your Confluent Cloud credentials
 3. **Connector Status Check**: Verify the V1 connector status
 4. **Discontinued Configs**: Review any V1 configs that won't be migrated
-5. **New Connector Name**: Choose a name for the V2 connector
-6. **Elasticsearch Server Version**: Select V8 or V9
-7. **Authentication Type**: Choose BASIC, NONE, or API_KEY
-8. **Configuration Review**: Review the final V2 configuration before creation
+5. **Migration Mode Selection**:
+   - **PRODUCTION**: Creates a V2 connector with similar configuration to your V1 connector (recommended)
+   - **TEST**: Allows you to test with a subset of topics by providing custom topic-to-resource mapping
+6. **New Connector Name**: Choose a name for the V2 connector
+7. **Elasticsearch Server Version**: Select V8 or V9
+8. **Authentication Type**: Choose BASIC, NONE, or API_KEY
+9. **Configuration Review**: Review the final V2 configuration before creation
 
 ### 6. Verify and Cleanup
 
@@ -148,6 +150,29 @@ After successful migration:
 2. Check that data is being written to Elasticsearch correctly
 3. Monitor connector metrics for any errors
 4. Once verified, delete the old V1 connector
+
+## Migration Modes
+
+The tool supports two migration modes:
+
+### PRODUCTION Mode (Recommended)
+
+Use this for standard migrations:
+- Your new V2 connector will have similar configuration to the V1 connector
+- `auto.create` and `resource.type` are automatically derived from your V1 configuration
+- Topic-to-resource mapping (if configured in V1) is automatically copied
+
+**Recommended for**: Final production migrations
+
+### TEST Mode
+
+Use this to validate the migration before committing:
+- Allows you to test with a subset of topics
+- Requires you to provide topic-to-resource mapping explicitly
+- Helps verify data flow and configuration before production migration
+- `auto.create` is set to `false` to ensure resources exist before writing
+
+**Recommended for**: Testing migrations with non-critical data
 
 ## Configuration Options
 
@@ -275,3 +300,12 @@ A: Since the original V1 connector is not modified, you can simply delete the V2
 
 **Q: What happens to my SMT (Single Message Transform) configurations?**
 A: All `transforms.*` configurations are automatically copied to the V2 connector.
+
+**Q: Why isn't `data.stream.type: NONE` showing as a breaking change?**
+A: The tool automatically converts V1's `data.stream.type: NONE` to V2's default `LOGS` (when applicable). This is handled transparently during migration.
+
+**Q: Why isn't the default batch size difference (`2000` vs `50`) a breaking change?**
+A: The tool preserves your current batch size setting from the V1 connector, so the default difference doesn't affect you.
+
+**Q: What's the difference between PRODUCTION and TEST migration modes?**
+A: PRODUCTION mode migrates your connector with auto-derived settings (recommended for final migration). TEST mode requires you to specify topic-to-resource mapping and is useful for validating the migration before production.
