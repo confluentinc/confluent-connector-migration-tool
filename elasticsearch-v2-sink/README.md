@@ -202,6 +202,43 @@ python3 elasticsearch-v2-sink/migrate-to-elasticsearch-v2-sink.py \
   --cluster_id "lkc-abc123"
 ```
 
+## ⚠️ SSL File Configurations
+
+If your V1 connector has SSL enabled and you have uploaded SSL certificate files (keystore/truststore), be aware of the following:
+
+### SSL Files Not Migrated
+
+This migration tool **does not upload SSL certificate files** to the V2 connector. This includes:
+
+- `elastic.https.ssl.truststore.file` - Truststore with CA certificates
+- `elastic.https.ssl.keystore.file` - Keystore with client certificates
+
+### Manual Upload Required
+
+If your V1 connector uses SSL files:
+
+1. **Create the V2 connector** using this migration tool
+2. **Manually upload SSL files** via Confluent Cloud UI:
+   - Go to Connectors > Your V2 Connector > Settings
+   - Locate the SSL certificate fields
+   - Upload the keystore/truststore files through the Cloud Console
+3. **Resume the V2 connector** after uploading files
+
+### Identifying SSL File Usage
+
+To check if your V1 connector has SSL files:
+
+```bash
+# Use Confluent CLI to describe the connector
+confluent connect cluster describe <connector-id>
+
+# Look for these config keys with non-empty values:
+# - elastic.https.ssl.truststore.file
+# - elastic.https.ssl.keystore.file
+```
+
+If these configs are present and have values (shown as `*` for security), you'll need to manually upload the files after migration.
+
 ## Troubleshooting
 
 ### Common Issues
