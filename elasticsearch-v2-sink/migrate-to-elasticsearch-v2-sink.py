@@ -471,10 +471,9 @@ def transform_v1_to_v2(v1_config, user_inputs, derived):
                 warnings.append(f"Renamed config: '{v1_key}' -> '{v2_key}'")
 
     # Copy all V1 configs to V2, except discontinued and specially handled ones
-    # This includes: direct configs, SSL configs, SMT transforms, kafka.*, schema.registry.*, etc.
+    # This includes: direct configs, SMT transforms, kafka.*, schema.registry.*, etc.
     excluded_keys = set(
         list(RENAMED_MAPPING.keys()) + list(DISCONTINUED.keys()) +
-        list(SSL_FILE_CONFIGS) +
         ["name", "connector.class", "connection.url", "connection.username",
          "connection.password", "elastic.security.protocol", "external.resource.usage"]
     )
