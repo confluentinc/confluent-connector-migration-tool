@@ -174,8 +174,7 @@ def ask_migration_mode():
     print("     * Your new V2 connector will have similar configuration to the V1 connector")
     print()
     print("  2. TEST - Create test connector to validate before final migration")
-    print("     * auto.create will be set to 'false'")
-    print("     * You must provide topic-to-index mapping")
+    print("     * You must provide topic-to-resource mapping")
     print("     * Allows testing with subset of topics")
     print()
 
@@ -232,15 +231,15 @@ def get_test_mode_configuration(v1_config):
     # Parse topics for validation
     topics_list = [t.strip() for t in topics_str.split(",") if t.strip()]
 
-    # Step 2: Get topic-to-index mapping
+    # Step 2: Get topic-to-resource mapping
     print()
-    print("Enter topic-to-index mapping.")
-    print("Format: topic1:index1,topic2:index2")
+    print("Enter topic-to-resource mapping.")
+    print("Format: topic1:resource1,topic2:resource2")
     print(f"Topics to map: {', '.join(topics_list)}")
     print()
 
     while True:
-        mapping_input = input("Enter topic-to-index mapping: ").strip()
+        mapping_input = input("Enter topic-to-resource mapping: ").strip()
         if not mapping_input:
             print("Mapping cannot be empty in test mode.")
             continue
@@ -251,7 +250,7 @@ def get_test_mode_configuration(v1_config):
         for pair in mapping_input.split(","):
             pair = pair.strip()
             if ":" not in pair:
-                print(f"Invalid format '{pair}'. Expected 'topic:index'")
+                print(f"Invalid format '{pair}'. Expected 'topic:resource'")
                 valid_format = False
                 break
             topic, _ = pair.split(":", 1)
