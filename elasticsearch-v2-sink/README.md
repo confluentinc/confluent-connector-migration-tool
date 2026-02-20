@@ -286,26 +286,79 @@ If these configs are present and have values (shown as `*` for security), you'll
 
 ## FAQ
 
-**Q: Will there be data loss during migration?**
-A: No. The tool preserves V1 connector offsets and applies them to the V2 connector, ensuring no data is lost or duplicated.
+### Data and Offsets
 
-**Q: Can I run both V1 and V2 connectors simultaneously?**
-A: Yes, but this may cause data duplication. This is useful for testing but not recommended for production.
+<details>
+<summary><strong>Will there be data loss during migration?</strong></summary>
 
-**Q: What if my V1 connector uses multiple Elasticsearch URLs?**
-A: V2 only supports a single URL. The tool will detect multiple URLs and prompt you to enter which URL to use.
+No. The tool preserves V1 connector offsets and applies them to the V2 connector, ensuring no data is lost or duplicated.
 
-**Q: How do I roll back if something goes wrong?**
-A: Since the original V1 connector is not modified, you can simply delete the V2 connector and resume the V1 connector.
+</details>
 
-**Q: What happens to my SMT (Single Message Transform) configurations?**
-A: All `transforms.*` configurations are automatically copied to the V2 connector.
+<details>
+<summary><strong>Can I run both V1 and V2 connectors simultaneously?</strong></summary>
 
-**Q: Why isn't `data.stream.type: NONE` showing as a breaking change?**
-A: The tool automatically converts V1's `data.stream.type: NONE` to V2's default `LOGS` (when applicable). This is handled transparently during migration.
+Yes, but this may cause data duplication. This is useful for testing but not recommended for production. To avoid duplication in production:
+- Pause the V1 connector before running the V2 connector
+- Once verified, delete the V1 connector
 
-**Q: Why isn't the default batch size difference (`2000` vs `50`) a breaking change?**
-A: The tool preserves your current batch size setting from the V1 connector, so the default difference doesn't affect you.
+</details>
 
-**Q: What's the difference between PRODUCTION and TEST migration modes?**
-A: PRODUCTION mode migrates your connector with auto-derived settings (recommended for final migration). TEST mode requires you to specify topic-to-resource mapping and is useful for validating the migration before production.
+### Configuration and Migration
+
+<details>
+<summary><strong>What if my V1 connector uses multiple Elasticsearch URLs?</strong></summary>
+
+V2 only supports a single URL. The tool will detect multiple URLs and prompt you to enter which URL to use during migration.
+
+</details>
+
+<details>
+<summary><strong>What happens to my SMT (Single Message Transform) configurations?</strong></summary>
+
+All `transforms.*` configurations are automatically copied to the V2 connector without modification.
+
+</details>
+
+<details>
+<summary><strong>What's the difference between PRODUCTION and TEST migration modes?</strong></summary>
+
+- **PRODUCTION Mode**: Migrates your connector with auto-derived settings. Recommended for final migration. Auto-creates settings based on your V1 configuration.
+- **TEST Mode**: Requires you to manually specify topic-to-resource mapping. Useful for validating the migration before production with a subset of topics.
+
+</details>
+
+### Automatic Conversions
+
+<details>
+<summary><strong>Why isn't `data.stream.type: NONE` showing as a breaking change?</strong></summary>
+
+The tool automatically converts V1's `data.stream.type: NONE` to V2's default `LOGS` (when applicable). This is handled transparently during migration, so you don't need to take any action.
+
+</details>
+
+<details>
+<summary><strong>Why isn't the default batch size difference (`2000` vs `50`) a breaking change?</strong></summary>
+
+The tool preserves your current batch size setting from the V1 connector, so the default difference doesn't affect you. If you explicitly set a batch size in V1, that exact value will be used in V2.
+
+</details>
+
+<details>
+<summary><strong>What happens to `behavior.on.malformed.documents: warn`?</strong></summary>
+
+V2 only supports `ignore` and `fail` values. The tool automatically converts `warn` to `ignore` during migration. This is transparent and requires no action from you.
+
+</details>
+
+### Rollback and Recovery
+
+<details>
+<summary><strong>How do I roll back if something goes wrong?</strong></summary>
+
+Since the original V1 connector is not modified by the migration tool:
+1. Delete the V2 connector in Confluent Cloud
+2. Resume the V1 connector
+3. Your data and offsets remain intact
+
+</details>
