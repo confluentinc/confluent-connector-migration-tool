@@ -25,18 +25,63 @@ Each migration tool is located in its respective directory with detailed instruc
 
 ## General Migration Process
 
-1. **Pause the V1 connector** in Confluent Cloud
-2. **Set up environment variables** for authentication
+1. **Pause the V1 connector** in Confluent Cloud (optional but recommended)
+2. **Provide Confluent Cloud credentials** via:
+   - Credentials file (recommended): JSON file with `email` and `password` fields
+   - Environment variables: `EMAIL` and `PASSWORD`
+   - Secure interactive input: The script will prompt with hidden password
 3. **Run the migration tool** with appropriate parameters
 4. **Review and confirm** the upgraded connector configuration
 5. **Monitor** the new connector after migration
 
+## Example Usage
+
+### Elasticsearch V1 to V2 Migration
+
+```bash
+# Set credentials in a file
+cat > ~/credentials/confluent_creds.json << 'EOF'
+{
+  "email": "your-email@confluent.io",
+  "password": "your-password"
+}
+EOF
+chmod 600 ~/credentials/confluent_creds.json
+
+# Run migration
+python3 elasticsearch-v2-sink/migrate-to-elasticsearch-v2-sink.py \
+  --v1_connector <connector-name> \
+  --environment <env-id> \
+  --cluster_id <cluster-id>
+
+# When prompted for credentials, choose option 2 (File) and provide:
+# ~/credentials/confluent_creds.json
+```
+
+## Architecture
+
+### MigrationClient Class
+
+The migration tools use a `MigrationClient` class (in `utils/migration_utils.py`) for authentication and API operations:
+
+- **Instance-based state**: Each client instance maintains its own authentication token and credentials
+- **Thread-safe**: Multiple clients can run concurrently without interfering with each other
+- **Token refresh**: Automatically refreshes authentication tokens when needed (3+ minute idle)
+
+### Helper Functions
+
+Stateless utility functions for user interactions:
+- `get_credentials_input()`: Interactive credential collection with multiple input options
+- `prompt_for_sensitive_values()`: Prompt for masked configuration values
+- `display_config_and_confirm()`: Display and confirm final configuration
+
 ## Important Notes
 
 - Migration tools preserve offsets to prevent data duplication
-- Always test migrations with small datasets first
+- Always test migrations with non-production connectors first
 - Review breaking changes specific to each connector type
 - Monitor the new connectors for any issues after migration
+- Use credentials files instead of environment variables to avoid exposing passwords in shell history
 
 ## Contributing
 
