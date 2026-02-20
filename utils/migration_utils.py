@@ -21,13 +21,253 @@ class APIError(Exception):
         self.response_text = response_text
 
 
-# Global state for token management
-_auth_state = {
-    'auth_token': None,
-    'last_poll_time': datetime.now(),
-    'user_email': None,
-    'user_password': None
-}
+class MigrationClient:
+    """
+    Client for managing connector migrations with encapsulated authentication state.
+
+    Each instance maintains its own authentication token and credentials, enabling
+    isolated execution and preventing conflicts in multi-execution scenarios.
+    """
+
+    def __init__(self, base_url: str = BASE_URL):
+        """
+        Initialize a new migration client.
+
+        Args:
+            base_url: The Confluent Cloud API base URL
+        """
+        self._base_url = base_url
+        self._auth_token = None
+        self._last_poll_time = datetime.now()
+        self._user_email = None
+        self._user_password = None
+
+    def initialize_auth(self) -> tuple:
+        """
+        Initialize authentication by getting credentials and auth token.
+
+        Returns:
+            Tuple of (email, password)
+        """
+        print("Setting up Confluent Cloud authentication...")
+        email, password = get_credentials_input()
+        self._get_auth_token(email, password)
+        return email, password
+
+    def authenticate(self, email: str, password: str) -> str:
+        """
+        Authenticate with provided credentials.
+
+        Args:
+            email: Confluent Cloud email
+            password: Confluent Cloud password
+
+        Returns:
+            The authentication token
+        """
+        return self._get_auth_token(email, password)
+
+    def _get_auth_token(self, email: str = None, password: str = None) -> str:
+        """
+        Get/refresh authentication token.
+
+        Args:
+            email: Confluent Cloud email (uses stored if not provided)
+            password: Confluent Cloud password (uses stored if not provided)
+
+        Returns:
+            The authentication token
+
+        Raises:
+            APIError: If authentication fails
+        """
+        # Use provided credentials or stored ones
+        if email and password:
+            self._user_email = email
+            self._user_password = password
+
+        if not self._user_email or not self._user_password:
+            raise APIError("Email or password not provided")
+
+        url = self._base_url + "api/sessions"
+        json_data = {
+            'email': self._user_email,
+            'password': self._user_password
+        }
+
+        response = requests.post(url, json=json_data)
+
+        if not response.ok:
+            raise APIError(f"Failed to get auth token: {response.status_code} {response.reason}",
+                           status_code=response.status_code,
+                           response_text=response.text)
+
+        try:
+            token = response.json().get('token')
+            if not token:
+                raise APIError("Auth token not found in response")
+            self._auth_token = token
+            self._last_poll_time = datetime.now()
+            return token
+        except json.JSONDecodeError:
+            raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
+
+    def _refresh_token_if_needed(self) -> None:
+        """Refresh auth token if it's been more than 3 minutes since last poll."""
+        if (datetime.now() - self._last_poll_time).total_seconds() > 180:
+            self._get_auth_token(self._user_email, self._user_password)
+
+    def get_connector_config(self, env: str, lkc: str, connector_name: str) -> dict:
+        """
+        Fetch connector configuration.
+
+        Args:
+            env: Environment ID
+            lkc: Kafka cluster ID
+            connector_name: Name of the connector
+
+        Returns:
+            Dictionary of connector configuration
+
+        Raises:
+            APIError: If the API call fails
+        """
+        self._refresh_token_if_needed()
+
+        cookies = {'auth_token': self._auth_token}
+        url = f"{self._base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
+
+        response = requests.get(url, cookies=cookies)
+
+        if not response.ok:
+            raise APIError(f"Failed to get connector config for {connector_name}: {response.status_code} {response.reason}",
+                           status_code=response.status_code,
+                           response_text=response.text)
+
+        try:
+            json_response = response.json()
+            return json_response["config"]
+        except json.JSONDecodeError:
+            raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
+
+    def get_connector_offsets(self, env: str, lkc: str, connector_name: str) -> list:
+        """
+        Fetch connector offsets.
+
+        Args:
+            env: Environment ID
+            lkc: Kafka cluster ID
+            connector_name: Name of the connector
+
+        Returns:
+            List of connector offsets
+
+        Raises:
+            APIError: If the API call fails (except 404)
+        """
+        self._refresh_token_if_needed()
+
+        cookies = {'auth_token': self._auth_token}
+        url = f"{self._base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
+
+        response = requests.get(url, cookies=cookies)
+
+        if response.status_code == 404:
+            # No offsets yet - connector hasn't committed
+            return []
+
+        if not response.ok:
+            raise APIError(f"Failed to get connector offsets for {connector_name}: {response.status_code} {response.reason}",
+                           status_code=response.status_code,
+                           response_text=response.text)
+
+        try:
+            json_response = response.json()
+            return json_response.get("offsets", [])
+        except json.JSONDecodeError:
+            raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
+
+    def get_connector_status(self, env: str, lkc: str, connector_name: str) -> str:
+        """
+        Fetch connector status.
+
+        Args:
+            env: Environment ID
+            lkc: Kafka cluster ID
+            connector_name: Name of the connector
+
+        Returns:
+            Connector status string
+
+        Raises:
+            APIError: If the API call fails
+        """
+        self._refresh_token_if_needed()
+
+        cookies = {'auth_token': self._auth_token}
+        url = f"{self._base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
+
+        response = requests.get(url, cookies=cookies)
+
+        if not response.ok:
+            raise APIError(f"Failed to get connector status for {connector_name}: {response.status_code} {response.reason}",
+                           status_code=response.status_code,
+                           response_text=response.text)
+
+        try:
+            json_response = response.json()
+            return json_response["connector"]["state"]
+        except json.JSONDecodeError:
+            raise APIError(f"Failed to decode JSON for connector status: {connector_name}", response_text=response.text)
+
+    def send_create_request(self, env: str, lkc: str, connector_name: str, config: dict, offsets: list) -> dict:
+        """
+        Create new connector with config and offsets.
+
+        Args:
+            env: Environment ID
+            lkc: Kafka cluster ID
+            connector_name: Name of the new connector
+            config: Connector configuration dictionary
+            offsets: List of offsets to preserve
+
+        Returns:
+            API response from connector creation
+
+        Raises:
+            APIError: If the API call fails
+        """
+        self._refresh_token_if_needed()
+
+        cookies = {'auth_token': self._auth_token}
+        new_connector_name = config.get("name", connector_name)
+
+        json_data = {
+            'name': new_connector_name,
+            'config': config,
+            'offsets': offsets
+        }
+
+        url = f"{self._base_url}api/accounts/{env}/clusters/{lkc}/connectors"
+
+        response = requests.post(
+            url,
+            cookies=cookies,
+            json=json_data,
+        )
+
+        if response.status_code != 201:
+            raise APIError(f"Failed to create connector: {response.status_code} {response.reason}",
+                           status_code=response.status_code,
+                           response_text=response.text)
+
+        try:
+            json_response = response.json()
+            print(f"Connector '{new_connector_name}' created successfully. Response: {json.dumps(json_response, indent=2)}")
+            return json_response
+        except json.JSONDecodeError:
+            raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
+
 
 
 def get_credentials_input():
@@ -115,153 +355,6 @@ def get_credentials_secure_input():
         return get_credentials_secure_input()
 
 
-def get_auth_token(base_url, email=None, password=None):
-    """Get/refresh authentication token."""
-    global _auth_state
-
-    # Use provided credentials or get them from state
-    if email and password:
-        _auth_state['user_email'] = email
-        _auth_state['user_password'] = password
-
-    if not _auth_state['user_email'] or not _auth_state['user_password']:
-        raise APIError("Email or password not provided")
-
-    url = base_url + "api/sessions"
-
-    json_data = {
-        'email': _auth_state['user_email'],
-        'password': _auth_state['user_password']
-    }
-
-    response = requests.post(url, json=json_data)
-
-    if not response.ok:
-        raise APIError(f"Failed to get auth token: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        token = response.json().get('token')
-        if not token:
-            raise APIError("Auth token not found in response")
-        _auth_state['auth_token'] = token
-        _auth_state['last_poll_time'] = datetime.now()
-        return token
-    except json.JSONDecodeError:
-        raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
-
-
-def _refresh_token_if_needed(base_url):
-    """Refresh auth token if it's been more than 3 minutes since last poll."""
-    if (datetime.now() - _auth_state['last_poll_time']).total_seconds() > 180:
-        get_auth_token(base_url, _auth_state['user_email'], _auth_state['user_password'])
-
-
-def get_connector_config(base_url, env, lkc, connector_name):
-    """Fetch connector configuration."""
-    _refresh_token_if_needed(base_url)
-
-    cookies = {'auth_token': _auth_state['auth_token']}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
-
-    response = requests.get(url, cookies=cookies)
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector config for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response["config"]
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
-
-
-def get_connector_offsets(base_url, env, lkc, connector_name):
-    """Fetch connector offsets."""
-    _refresh_token_if_needed(base_url)
-
-    cookies = {'auth_token': _auth_state['auth_token']}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
-
-    response = requests.get(url, cookies=cookies)
-
-    if response.status_code == 404:
-        # No offsets yet - connector hasn't committed
-        return []
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector offsets for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response.get("offsets", [])
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
-
-
-def get_connector_status(base_url, env, lkc, connector_name):
-    """Fetch connector status."""
-    _refresh_token_if_needed(base_url)
-
-    cookies = {'auth_token': _auth_state['auth_token']}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
-
-    response = requests.get(url, cookies=cookies)
-
-    if not response.ok:
-        raise APIError(f"Failed to get connector status for {connector_name}: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        return json_response["connector"]["state"]
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON for connector status: {connector_name}", response_text=response.text)
-
-
-def send_create_request(base_url, env, lkc, connector_name, config, offsets):
-    """Create new connector with config and offsets."""
-    _refresh_token_if_needed(base_url)
-
-    cookies = {
-        'auth_token': _auth_state['auth_token'],
-    }
-
-    new_connector_name = config.get("name", connector_name)
-
-    json_data = {
-        'name': new_connector_name,
-        'config': config,
-        'offsets': offsets
-    }
-
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors"
-
-    response = requests.post(
-        url,
-        cookies=cookies,
-        json=json_data,
-    )
-
-    if response.status_code != 201:
-        raise APIError(f"Failed to create connector: {response.status_code} {response.reason}",
-                       status_code=response.status_code,
-                       response_text=response.text)
-
-    try:
-        json_response = response.json()
-        print(f"Connector '{new_connector_name}' created successfully. Response: {json.dumps(json_response, indent=2)}")
-        return json_response
-    except json.JSONDecodeError:
-        raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
-
-
 def prompt_for_sensitive_values(config, scrubbed_string=SCRUBBED_PASSWORD_STRING, skip_keys=None):
     """Prompt user for any masked sensitive values."""
     if skip_keys is None:
@@ -300,14 +393,6 @@ def display_config_and_confirm(config, message="Proceed with creating the connec
 
     user_input = input(f"\nPlease review the above configuration. {message} (yes/no): ")
     return user_input.lower() == 'yes'
-
-
-def initialize_auth(base_url):
-    """Initialize authentication by getting credentials and auth token."""
-    print("Setting up Confluent Cloud authentication...")
-    email, password = get_credentials_input()
-    get_auth_token(base_url, email, password)
-    return email, password
 
 
 def check_connector_status_and_confirm(status, connector_name):

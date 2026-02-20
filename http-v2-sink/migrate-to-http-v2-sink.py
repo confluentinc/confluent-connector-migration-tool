@@ -19,13 +19,9 @@ from utils.migration_utils import (
     BASE_URL,
     SCRUBBED_PASSWORD_STRING,
     APIError,
-    get_connector_config,
-    get_connector_offsets,
-    get_connector_status,
-    send_create_request,
+    MigrationClient,
     prompt_for_sensitive_values,
     display_config_and_confirm,
-    initialize_auth,
     check_connector_status_and_confirm
 )
 
@@ -192,22 +188,23 @@ def main():
         print(f"Cluster: {lkc}")
 
         # Step 2: Get credentials and authenticate
-        initialize_auth(BASE_URL)
+        client = MigrationClient()
+        client.initialize_auth()
 
         # Step 3: Check V1 connector status
         print("\nFetching V1 connector status...")
-        status = get_connector_status(BASE_URL, env, lkc, connector_name)
+        status = client.get_connector_status(env, lkc, connector_name)
 
         if not check_connector_status_and_confirm(status, connector_name):
             return
 
         # Step 4: Fetch V1 config and offsets
         print("\nFetching V1 connector offsets...")
-        offsets = get_connector_offsets(BASE_URL, env, lkc, connector_name)
+        offsets = client.get_connector_offsets(env, lkc, connector_name)
         print(f"Retrieved {len(offsets)} offset entries")
 
         print("Fetching V1 connector configuration...")
-        v1_config = get_connector_config(BASE_URL, env, lkc, connector_name)
+        v1_config = client.get_connector_config(env, lkc, connector_name)
         print(f"Retrieved {len(v1_config)} configuration properties")
 
         # Step 5: Get user inputs
@@ -236,7 +233,7 @@ def main():
 
         # Step 9: Create V2 connector with preserved offsets
         print("\nCreating V2 connector with preserved offsets...")
-        send_create_request(BASE_URL, env, lkc, user_inputs['new_connector_name'], v2_config, offsets)
+        client.send_create_request(env, lkc, user_inputs['new_connector_name'], v2_config, offsets)
 
         # Step 10: Show next steps
         print("\n" + "="*80)

@@ -19,13 +19,9 @@ from utils.migration_utils import (
     BASE_URL,
     SCRUBBED_PASSWORD_STRING,
     APIError,
-    get_connector_config,
-    get_connector_offsets,
-    get_connector_status,
-    send_create_request,
+    MigrationClient,
     prompt_for_sensitive_values,
     display_config_and_confirm,
-    initialize_auth,
     check_connector_status_and_confirm
 )
 
@@ -703,22 +699,23 @@ def main():
             return
 
         # Step 2: Get credentials and authenticate
-        initialize_auth(BASE_URL)
+        client = MigrationClient()
+        client.initialize_auth()
 
         # Step 3: Check legacy connector status
         print("\nFetching Legacy connector status...")
-        status = get_connector_status(BASE_URL, env, lkc, connector_name)
+        status = client.get_connector_status(env, lkc, connector_name)
 
         if not check_connector_status_and_confirm(status, connector_name):
             return
 
         # Step 4: Fetch legacy config and offsets
         print("\nFetching legacy connector offsets...")
-        offsets = get_connector_offsets(BASE_URL, env, lkc, connector_name)
+        offsets = client.get_connector_offsets(env, lkc, connector_name)
         print(f"Retrieved {len(offsets)} offset entries")
 
         print("Fetching Legacy connector configuration...")
-        legacy_config = get_connector_config(BASE_URL, env, lkc, connector_name)
+        legacy_config = client.get_connector_config(env, lkc, connector_name)
         print(f"Retrieved {len(legacy_config)} configuration properties")
 
         # Step 5: Check for unsupported configs
@@ -787,7 +784,7 @@ def main():
 
         # Step 11: Create Storage Write API connector with preserved offsets
         print("\nCreating Storage Write API connector with preserved offsets...")
-        send_create_request(BASE_URL, env, lkc, user_inputs['new_connector_name'], storage_config, offsets)
+        client.send_create_request(env, lkc, user_inputs['new_connector_name'], storage_config, offsets)
 
         # Step 12: Show next steps
         print("\n" + "="*80)
