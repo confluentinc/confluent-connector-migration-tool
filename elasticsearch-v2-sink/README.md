@@ -43,7 +43,6 @@ The following V1 properties are not supported in V2 and will be dropped with a w
 | `drop.invalid.message` | V2 fails task on preprocessing errors |
 | `linger.ms` | V2 uses framework-level batching |
 | `flush.timeout.ms` | V2 uses framework-level timeout |
-| `type.name` | Deprecated in ES7+, not needed |
 | `external.resource.usage` | Split into `auto.create` + `resource.type` |
 
 ### Renamed Properties
