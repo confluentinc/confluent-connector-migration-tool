@@ -13,19 +13,333 @@ import json
 import getpass
 import sys
 import os
+from datetime import datetime
+import requests
 
-# Add parent directory to path for utils import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Constants
+BASE_URL = "https://confluent.cloud/"
+SCRUBBED_PASSWORD_STRING = "****************"
 
-from utils.migration_utils import (
-    BASE_URL,
-    SCRUBBED_PASSWORD_STRING,
-    APIError,
-    MigrationClient,
-    prompt_for_sensitive_values,
-    display_config_and_confirm,
-    check_connector_status_and_confirm
-)
+# Global variables for authentication state
+auth_token = None
+last_poll_time = datetime.now()
+user_email = None
+user_password = None
+
+
+class APIError(Exception):
+    """Custom exception for API errors."""
+    def __init__(self, message, status_code=None, response_text=None):
+        super().__init__(message)
+        self.status_code = status_code
+        self.response_text = response_text
+
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+def get_auth_token(email=None, password=None):
+    """Get/refresh authentication token."""
+    global auth_token, last_poll_time, user_email, user_password
+
+    # Store credentials on first call
+    if email and password:
+        user_email = email
+        user_password = password
+
+    # Ensure we have credentials
+    if not user_email or not user_password:
+        raise APIError("Email or password not provided")
+
+    url = BASE_URL + "api/sessions"
+    json_data = {
+        'email': user_email,
+        'password': user_password
+    }
+
+    response = requests.post(url, json=json_data)
+
+    if not response.ok:
+        raise APIError(f"Failed to get auth token: {response.status_code} {response.reason}",
+                       status_code=response.status_code,
+                       response_text=response.text)
+
+    try:
+        token = response.json().get('token')
+        if not token:
+            raise APIError("Auth token not found in response")
+        auth_token = token
+        last_poll_time = datetime.now()
+        return token
+    except json.JSONDecodeError:
+        raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
+
+
+def refresh_token_if_needed():
+    """Refresh auth token if it's been more than 3 minutes since last poll."""
+    global last_poll_time
+
+    if (datetime.now() - last_poll_time).total_seconds() > 180:
+        get_auth_token(user_email, user_password)
+
+
+def get_connector_config(env, lkc, connector_name):
+    """Fetch connector configuration."""
+    refresh_token_if_needed()
+
+    cookies = {'auth_token': auth_token}
+    url = f"{BASE_URL}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
+
+    response = requests.get(url, cookies=cookies)
+
+    if not response.ok:
+        raise APIError(f"Failed to get connector config for {connector_name}: {response.status_code} {response.reason}",
+                       status_code=response.status_code,
+                       response_text=response.text)
+
+    try:
+        json_response = response.json()
+        return json_response["config"]
+    except json.JSONDecodeError:
+        raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
+
+
+def get_connector_offsets(env, lkc, connector_name):
+    """Fetch connector offsets."""
+    refresh_token_if_needed()
+
+    cookies = {'auth_token': auth_token}
+    url = f"{BASE_URL}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
+
+    response = requests.get(url, cookies=cookies)
+
+    if response.status_code == 404:
+        # No offsets yet - connector hasn't committed
+        return []
+
+    if not response.ok:
+        raise APIError(f"Failed to get connector offsets for {connector_name}: {response.status_code} {response.reason}",
+                       status_code=response.status_code,
+                       response_text=response.text)
+
+    try:
+        json_response = response.json()
+        return json_response.get("offsets", [])
+    except json.JSONDecodeError:
+        raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
+
+
+def get_connector_status(env, lkc, connector_name):
+    """Fetch connector status."""
+    refresh_token_if_needed()
+
+    cookies = {'auth_token': auth_token}
+    url = f"{BASE_URL}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
+
+    response = requests.get(url, cookies=cookies)
+
+    if not response.ok:
+        raise APIError(f"Failed to get connector status for {connector_name}: {response.status_code} {response.reason}",
+                       status_code=response.status_code,
+                       response_text=response.text)
+
+    try:
+        json_response = response.json()
+        return json_response["connector"]["state"]
+    except json.JSONDecodeError:
+        raise APIError(f"Failed to decode JSON for connector status: {connector_name}", response_text=response.text)
+
+
+def send_create_request(env, lkc, connector_name, config, offsets):
+    """Create new connector with config and offsets."""
+    refresh_token_if_needed()
+
+    cookies = {'auth_token': auth_token}
+    new_connector_name = config.get("name", connector_name)
+
+    json_data = {
+        'name': new_connector_name,
+        'config': config,
+        'offsets': offsets
+    }
+
+    url = f"{BASE_URL}api/accounts/{env}/clusters/{lkc}/connectors"
+
+    response = requests.post(
+        url,
+        cookies=cookies,
+        json=json_data,
+    )
+
+    if response.status_code != 201:
+        raise APIError(f"Failed to create connector: {response.status_code} {response.reason}",
+                       status_code=response.status_code,
+                       response_text=response.text)
+
+    try:
+        json_response = response.json()
+        print(f"Connector '{new_connector_name}' created successfully. Response: {json.dumps(json_response, indent=2)}")
+        return json_response
+    except json.JSONDecodeError:
+        raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
+
+
+def get_credentials_input():
+    """Handle credentials input with file support."""
+    print("\n" + "="*60)
+    print("Confluent Cloud Credentials")
+    print("="*60)
+    print("Choose how you want to provide your credentials:")
+    print("1. Environment variables - Set EMAIL and PASSWORD environment variables")
+    print("2. File - Provide path to a JSON file containing credentials (RECOMMENDED)")
+    print("3. Secure input - Enter credentials manually (password hidden)")
+    print()
+    print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
+
+    cred_choice = input("Choose option (1-3, default is 2): ").strip()
+
+    if cred_choice == "2" or not cred_choice:
+        # Option 2: File (RECOMMENDED)
+        while True:
+            cred_file_path = input("Enter the path to your credentials JSON file: ").strip()
+            if cred_file_path and os.path.exists(cred_file_path):
+                try:
+                    with open(cred_file_path, 'r') as f:
+                        cred_data = json.load(f)
+
+                    email = cred_data.get('email')
+                    password = cred_data.get('password')
+
+                    if email and password:
+                        print(f"Credentials loaded from: {cred_file_path}")
+                        return email, password
+                    else:
+                        print("Invalid credentials file format. Expected: {\"email\": \"...\", \"password\": \"...\"}")
+                        retry = input("Try again? (yes/no): ").strip().lower()
+                        if retry not in ['yes', 'y']:
+                            return get_credentials_secure_input()
+                except json.JSONDecodeError as e:
+                    print(f"Invalid JSON format in credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+                except Exception as e:
+                    print(f"Error reading credentials file: {e}")
+                    retry = input("Try again? (yes/no): ").strip().lower()
+                    if retry not in ['yes', 'y']:
+                        return get_credentials_secure_input()
+            else:
+                print("File not found. Please provide a valid file path.")
+                retry = input("Try again? (yes/no): ").strip().lower()
+                if retry not in ['yes', 'y']:
+                    return get_credentials_secure_input()
+    elif cred_choice == "3":
+        # Option 3: Secure input
+        return get_credentials_secure_input()
+    else:
+        # Option 1: Environment variables
+        email = os.environ.get("EMAIL")
+        password = os.environ.get("PASSWORD")
+
+        if email and password:
+            print("Credentials loaded from environment variables")
+            print("NOTE: Environment variables may be visible in process lists and command history.")
+            return email, password
+        else:
+            print("EMAIL and PASSWORD environment variables not set")
+            print("Falling back to secure input...")
+            return get_credentials_secure_input()
+
+
+def get_credentials_secure_input():
+    """Get credentials through secure user input (password hidden)."""
+    print("\nSecure Credentials Input")
+    print("Your password will be hidden when typing.")
+
+    email = input("Enter your Confluent Cloud email: ").strip()
+
+    # Use getpass for secure password input (hidden)
+    password = getpass.getpass("Enter your Confluent Cloud password: ")
+
+    if email and password:
+        print("Credentials received securely")
+        return email, password
+    else:
+        print("Email and password cannot be empty")
+        return get_credentials_secure_input()
+
+
+def prompt_for_sensitive_values(config, scrubbed_string=SCRUBBED_PASSWORD_STRING, skip_keys=None):
+    """Prompt user for any masked sensitive values."""
+    if skip_keys is None:
+        skip_keys = []
+
+    for key, value in config.items():
+        if value == scrubbed_string and key not in skip_keys:
+            while True:
+                user_input = getpass.getpass(f"Please enter the value for {key}: ")
+                if user_input:
+                    config[key] = user_input
+                    break
+                else:
+                    print("Input cannot be empty. Please try again.")
+
+    return config
+
+
+def display_config_and_confirm(config, message="Proceed with creating the connector?", mask_keys=None):
+    """Display config JSON and get user confirmation."""
+    if mask_keys is None:
+        mask_keys = []
+
+    print("\n" + "="*80)
+    print("FINAL CONNECTOR CONFIGURATION")
+    print("="*80)
+
+    # Mask sensitive values for display
+    display_config = config.copy()
+    for key in mask_keys:
+        if key in display_config:
+            display_config[key] = '********'
+
+    print(json.dumps(display_config, indent=4))
+    print("="*80)
+
+    user_input = input(f"\nPlease review the above configuration. {message} (yes/no): ")
+    return user_input.lower() == 'yes'
+
+
+def check_connector_status_and_confirm(status, connector_name):
+    """
+    Check connector status and get user confirmation if connector is running.
+
+    Returns:
+        True if migration should proceed, False otherwise.
+    """
+    if status == "RUNNING":
+        print("\n" + "="*80)
+        print("CONNECTOR STATUS WARNING")
+        print("="*80)
+        print(f"Your connector '{connector_name}' is currently RUNNING.")
+        print()
+        print("  * If you are testing on dummy resources, you can keep the connector running")
+        print("  * For migrating production data, it is recommended to PAUSE the connector")
+        print("    to avoid data duplication")
+        print()
+        print("The migration will proceed, but be aware of potential data duplication.")
+        print("="*80)
+
+        user_input = input("Do you still want to proceed? (yes/no): ")
+        if user_input.lower() != 'yes':
+            print("Exiting the migration tool...")
+            return False
+    elif status == "PAUSED":
+        print(f"Connector '{connector_name}' is paused - safe to proceed with migration")
+    else:
+        print(f"Connector status: {status}")
+
+    return True
 
 
 # ============================================================================
@@ -82,6 +396,56 @@ def show_breaking_changes_warning():
     user_input = input("\nDo you understand these breaking changes and want to proceed? (yes/no): ")
     if user_input.lower() != 'yes':
         print("Migration cancelled due to breaking changes concerns.")
+        return False
+    return True
+
+
+def check_ssl_file_configs(v1_config):
+    """Check for SSL file configurations that need manual upload."""
+    ssl_file_configs = {
+        "elastic.https.ssl.truststore.file": "Truststore with CA certificates",
+        "elastic.https.ssl.keystore.file": "Keystore with client certificates"
+    }
+
+    found_ssl_files = []
+    for config_key, description in ssl_file_configs.items():
+        if config_key in v1_config and v1_config[config_key]:
+            found_ssl_files.append((config_key, description))
+
+    return found_ssl_files
+
+
+def show_ssl_file_warning(ssl_file_configs):
+    """Display warning about SSL file configurations."""
+    if not ssl_file_configs:
+        return True
+
+    print("\n" + "="*80)
+    print("WARNING: SSL FILE CONFIGURATIONS DETECTED")
+    print("="*80)
+    print("The following SSL certificate files are configured in your V1 connector:")
+    print()
+
+    for config_key, description in ssl_file_configs:
+        print(f"  * {config_key}")
+        print(f"    -> {description}")
+        print()
+
+    print("-"*80)
+    print("IMPORTANT: SSL certificate files are NOT automatically migrated!")
+    print()
+    print("After creating the V2 connector, you MUST:")
+    print("  1. Go to Confluent Cloud Console")
+    print("  2. Navigate to Connectors > Your V2 Connector > Settings")
+    print("  3. Manually upload the keystore/truststore files")
+    print("  4. Resume the connector after uploading files")
+    print()
+    print("Without these files, SSL/TLS connections will fail.")
+    print("-"*80)
+
+    user_input = input("\nDo you understand that SSL files need manual upload after migration? (yes/no): ")
+    if user_input.lower() != 'yes':
+        print("Migration cancelled.")
         return False
     return True
 
@@ -363,16 +727,42 @@ def get_user_inputs(v1_config, derived, migration_mode='production'):
     if "," in connection_url:
         print("\nConnection URL:")
         print(f"  V1 config has multiple URLs: {connection_url}")
-        print("  V2 only supports a single URL. Please enter the URL to use.")
+        print("  V2 only supports a single URL. Please select or enter the URL to use.")
+
+        # Parse the available URLs
+        available_urls = [url.strip() for url in connection_url.split(",")]
+        print("\nAvailable URLs:")
+        for i, url in enumerate(available_urls, 1):
+            print(f"  {i}. {url}")
 
         while True:
-            connection_url = input("Enter connection.url: ").strip()
+            user_input = input("\nEnter URL number (1-{}) or type a URL directly: ".format(len(available_urls))).strip()
+
+            # Check if user entered a number
+            try:
+                url_index = int(user_input)
+                if 1 <= url_index <= len(available_urls):
+                    connection_url = available_urls[url_index - 1]
+                    break
+                else:
+                    print(f"Invalid selection. Please enter a number between 1 and {len(available_urls)}.")
+                    continue
+            except ValueError:
+                # User entered a URL directly
+                connection_url = user_input
+
             if not connection_url:
                 print("URL cannot be empty. Please try again.")
                 continue
             elif "," in connection_url:
                 print("V2 only supports a single URL. Please enter a single URL.")
                 continue
+
+            # Validate that the URL is reasonable (basic check)
+            if not connection_url.startswith(("http://", "https://")):
+                print("URL should start with http:// or https://. Please try again.")
+                continue
+
             break
 
         print(f"Using connection URL: {connection_url}")
@@ -399,7 +789,7 @@ def get_user_inputs(v1_config, derived, migration_mode='production'):
 
             if not connection_username or not connection_password:
                 print("ERROR: BASIC auth requires both username AND password!")
-                raise ValueError("BASIC auth requires both username AND password!")
+                continue
             break
 
         elif auth_choice == "2":
@@ -408,7 +798,7 @@ def get_user_inputs(v1_config, derived, migration_mode='production'):
 
             if not api_key_value:
                 print("ERROR: API_KEY auth requires api.key.value!")
-                raise ValueError("API_KEY auth requires api.key.value!")
+                continue
             break
 
         elif auth_choice == "3":
@@ -542,69 +932,77 @@ def main():
             return
 
         # Step 2: Get credentials and authenticate
-        client = MigrationClient()
-        client.initialize_auth()
+        print("\nSetting up Confluent Cloud authentication...")
+        email, password = get_credentials_input()
+        get_auth_token(email, password)
 
         # Step 3: Check V1 connector status
         print("\nFetching V1 connector status...")
-        status = client.get_connector_status(env, lkc, connector_name)
+        status = get_connector_status(env, lkc, connector_name)
 
         if not check_connector_status_and_confirm(status, connector_name):
             return
 
         # Step 4: Fetch V1 config and offsets
         print("\nFetching V1 connector offsets...")
-        offsets = client.get_connector_offsets(env, lkc, connector_name)
+        offsets = get_connector_offsets(env, lkc, connector_name)
         print(f"Retrieved {len(offsets)} offset entries")
 
         print("Fetching V1 connector configuration...")
-        v1_config = client.get_connector_config(env, lkc, connector_name)
+        v1_config = get_connector_config(env, lkc, connector_name)
         print(f"Retrieved {len(v1_config)} configuration properties")
 
-        # Step 5: Check for discontinued configs
+        # Step 5: Check for SSL file configurations
+        print("\nChecking for SSL file configurations...")
+        ssl_file_configs = check_ssl_file_configs(v1_config)
+        if ssl_file_configs:
+            if not show_ssl_file_warning(ssl_file_configs):
+                return
+
+        # Step 6: Check for discontinued configs
         print("\nChecking for discontinued configurations...")
         discontinued_configs = check_discontinued_configs(v1_config)
         if discontinued_configs:
             if not show_discontinued_configs_warning(discontinued_configs, v1_config):
                 return
 
-        # Step 6: Choose migration mode
+        # Step 7: Choose migration mode
         migration_mode = ask_migration_mode()
 
-        # Step 6b: Get test mode configuration if applicable
+        # Step 7b: Get test mode configuration if applicable
         test_config = None
         if migration_mode == 'test':
             test_config = get_test_mode_configuration(v1_config)
 
-        # Step 7: Derive V2 properties
+        # Step 8: Derive V2 properties
         print("\nDeriving V2 properties from V1 configuration...")
         derived = derive_v2_properties(v1_config)
         print(f"  - SSL enabled: {derived['ssl_enabled']}")
         print(f"  - Auto create: {derived['auto_create']}")
         print(f"  - Resource type: {derived['resource_type']}")
 
-        # Step 8: Get user inputs for V2 properties
+        # Step 9: Get user inputs for V2 properties
         user_inputs = get_user_inputs(v1_config, derived, migration_mode)
 
-        # Step 9: Transform V1 -> V2 config
+        # Step 10: Transform V1 -> V2 config
         print("\nTransforming V1 configuration to V2...")
         v2_config, warnings = transform_v1_to_v2(v1_config, user_inputs, derived)
 
-        # Step 9b: Apply test mode overrides if applicable
+        # Step 10b: Apply test mode overrides if applicable
         if test_config:
             v2_config, test_warnings = apply_test_mode_overrides(v2_config, test_config)
             warnings.extend(test_warnings)
 
         display_transformation_warnings(warnings)
 
-        # Step 10: Prompt for any masked sensitive values
+        # Step 11: Prompt for any masked sensitive values
         v2_config = prompt_for_sensitive_values(
             v2_config,
             SCRUBBED_PASSWORD_STRING,
             skip_keys=["connection.password"]  # Already handled
         )
 
-        # Step 11: Display final config for confirmation
+        # Step 12: Display final config for confirmation
         mask_keys = ["connection.password", "api.key.value", "kafka.api.secret",
                      "schema.registry.basic.auth.user.info"]
 
@@ -614,11 +1012,11 @@ def main():
             print("Migration cancelled.")
             return
 
-        # Step 12: Create V2 connector with preserved offsets
+        # Step 13: Create V2 connector with preserved offsets
         print("\nCreating V2 connector with preserved offsets...")
-        client.send_create_request(env, lkc, user_inputs['new_connector_name'], v2_config, offsets)
+        send_create_request(env, lkc, user_inputs['new_connector_name'], v2_config, offsets)
 
-        # Step 13: Show next steps
+        # Step 14: Show next steps
         print("\n" + "="*80)
         print("MIGRATION COMPLETED SUCCESSFULLY")
         print("="*80)
