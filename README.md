@@ -58,23 +58,6 @@ python3 elasticsearch-v2-sink/migrate-to-elasticsearch-v2-sink.py \
 # ~/credentials/confluent_creds.json
 ```
 
-## Architecture
-
-### MigrationClient Class
-
-The migration tools use a `MigrationClient` class (in `utils/migration_utils.py`) for authentication and API operations:
-
-- **Instance-based state**: Each client instance maintains its own authentication token and credentials
-- **Thread-safe**: Multiple clients can run concurrently without interfering with each other
-- **Token refresh**: Automatically refreshes authentication tokens when needed (3+ minute idle)
-
-### Helper Functions
-
-Stateless utility functions for user interactions:
-- `get_credentials_input()`: Interactive credential collection with multiple input options
-- `prompt_for_sensitive_values()`: Prompt for masked configuration values
-- `display_config_and_confirm()`: Display and confirm final configuration
-
 ## Important Notes
 
 - Migration tools preserve offsets to prevent data duplication
