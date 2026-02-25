@@ -4,12 +4,14 @@ import json
 from datetime import datetime
 import requests
 import getpass
-
 auth_token = None
 last_poll_time = datetime.now()
 SCRUBBED_PASSWORD_STRING = "****************"
 user_email = None
 user_password = None
+cloud_api_key = None
+cloud_api_secret = None
+is_api_key_auth = False
 
 class APIError(Exception):
     """Custom exception for API errors."""
@@ -87,12 +89,30 @@ def get_credentials_input():
     print("1. Environment variables - Set EMAIL and PASSWORD environment variables")
     print("2. File - Provide path to a JSON file containing credentials (RECOMMENDED)")
     print("3. Secure input - Enter credentials manually (password hidden)")
+    print("4. Cloud API Key - Use a Confluent Cloud API Key and Secret")
     print()
-    print("SECURITY NOTE: Option 2 (file) is recommended to avoid password exposure in command history.")
+    print("SECURITY NOTE: Option 2 (file) is recommended to avoid credential exposure in command history.")
 
-    cred_choice = input("Choose option (1-3, default is 2): ").strip()
+    cred_choice = input("Choose option (1-4, default is 2): ").strip()
 
-    if cred_choice == "2":
+    if cred_choice == "4":
+        # Option 4: Cloud API Key + Secret
+        global is_api_key_auth
+        is_api_key_auth = True
+        print("\nYou can create a Cloud API Key at:")
+        print("  Confluent Cloud UI → Administration → API Keys → Add API key")
+        print()
+
+        api_key = input("Enter your Cloud API Key: ").strip()
+        api_secret = getpass.getpass("Enter your Cloud API Secret (input hidden): ").strip()
+
+        if not api_key or not api_secret:
+            raise APIError("Cloud API Key and Secret cannot be empty")
+
+        print("✅ Cloud API Key received")
+        return api_key, api_secret
+
+    elif cred_choice == "2":
         # Option 2: File (RECOMMENDED)
         while True:
             cred_file_path = input("Enter the path to your credentials JSON file: ").strip()
@@ -623,7 +643,6 @@ def get_keyfile_input():
 def get_auth_token(base_url, email=None, password=None):
     url = base_url + "api/sessions"
 
-    # Use provided credentials or get them from environment variables
     if not email or not password:
         email = os.environ.get("EMAIL")
         password = os.environ.get("PASSWORD")
@@ -652,14 +671,16 @@ def get_auth_token(base_url, email=None, password=None):
         raise APIError("Failed to decode JSON while getting auth token", response_text=response.text)
 
 def get_connector_config(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    cookies = {'auth_token': auth_token}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
-
-    response = requests.get(url, cookies=cookies)
+    global auth_token, last_poll_time, user_email, user_password, cloud_api_key, cloud_api_secret, is_api_key_auth
+    if is_api_key_auth:
+        url = f"https://api.confluent.cloud/connect/v1/environments/{env}/clusters/{lkc}/connectors/{connector_name}"
+        response = requests.get(url, auth=(cloud_api_key, cloud_api_secret))
+    else:
+        if (datetime.now() - last_poll_time).total_seconds() > 180:
+            auth_token = get_auth_token(base_url, user_email, user_password)
+            last_poll_time = datetime.now()
+        url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}"
+        response = requests.get(url, cookies={'auth_token': auth_token})
 
     if not response.ok:
         raise APIError(f"Failed to get connector config for {connector_name}: {response.status_code} {response.reason}",
@@ -673,13 +694,16 @@ def get_connector_config(base_url, env, lkc, connector_name):
         raise APIError(f"Failed to decode JSON for connector config: {connector_name}", response_text=response.text)
 
 def get_connector_offsets(base_url, env, lkc, connector_name):
-    global auth_token, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    headers = {'Authorization': f'Bearer {auth_token}'}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
-    response = requests.get(url, headers=headers)
+    global auth_token, last_poll_time, user_email, user_password, cloud_api_key, cloud_api_secret, is_api_key_auth
+    if is_api_key_auth:
+        url = f"https://api.confluent.cloud/connect/v1/environments/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
+        response = requests.get(url, auth=(cloud_api_key, cloud_api_secret))
+    else:
+        if (datetime.now() - last_poll_time).total_seconds() > 180:
+            auth_token = get_auth_token(base_url, user_email, user_password)
+            last_poll_time = datetime.now()
+        url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/offsets"
+        response = requests.get(url, headers={'Authorization': f'Bearer {auth_token}'})
 
     if not response.ok:
         raise APIError(f"Failed to get connector offsets for {connector_name}: {response.status_code} {response.reason}",
@@ -693,29 +717,23 @@ def get_connector_offsets(base_url, env, lkc, connector_name):
         raise APIError(f"Failed to decode JSON for connector offsets: {connector_name}", response_text=response.text)
 
 def send_create_request(base_url, env, lkc, connector_name, configs, offsets):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-
-    cookies = {
-        'auth_token': auth_token,
-    }
-
+    global auth_token, last_poll_time, user_email, user_password, cloud_api_key, cloud_api_secret, is_api_key_auth
     new_connector_name = configs.get("name")
-
     json_data = {
         'name': new_connector_name,
         'config': configs,
         'offsets': offsets
     }
 
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors"
-
-    response = requests.post(
-        url,
-        cookies=cookies,
-        json=json_data,
-    )
+    if is_api_key_auth:
+        url = f"https://api.confluent.cloud/connect/v1/environments/{env}/clusters/{lkc}/connectors"
+        response = requests.post(url, auth=(cloud_api_key, cloud_api_secret), json=json_data)
+    else:
+        if (datetime.now() - last_poll_time).total_seconds() > 180:
+            auth_token = get_auth_token(base_url, user_email, user_password)
+            last_poll_time = datetime.now()
+        url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors"
+        response = requests.post(url, cookies={'auth_token': auth_token}, json=json_data)
 
     if response.status_code != 201:
         raise APIError(f"Failed to create connector: {response.status_code} {response.reason}",
@@ -730,15 +748,16 @@ def send_create_request(base_url, env, lkc, connector_name, configs, offsets):
         raise APIError(f"Failed to decode JSON response for connector creation", response_text=response.text)
 
 def get_connector_status(base_url, env, lkc, connector_name):
-    global auth_token, last_poll_time, user_email, user_password
-    if (datetime.now() - last_poll_time).total_seconds() > 180:
-        auth_token = get_auth_token(base_url, user_email, user_password)
-        last_poll_time = datetime.now()
-
-    cookies = {'auth_token': auth_token}
-    url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
-
-    response = requests.get(url, cookies=cookies)
+    global auth_token, last_poll_time, user_email, user_password, cloud_api_key, cloud_api_secret, is_api_key_auth
+    if is_api_key_auth:
+        url = f"https://api.confluent.cloud/connect/v1/environments/{env}/clusters/{lkc}/connectors/{connector_name}/status"
+        response = requests.get(url, auth=(cloud_api_key, cloud_api_secret))
+    else:
+        if (datetime.now() - last_poll_time).total_seconds() > 180:
+            auth_token = get_auth_token(base_url, user_email, user_password)
+            last_poll_time = datetime.now()
+        url = f"{base_url}api/accounts/{env}/clusters/{lkc}/connectors/{connector_name}/status"
+        response = requests.get(url, cookies={'auth_token': auth_token})
 
     if not response.ok:
         raise APIError(f"Failed to get connector status for {connector_name}: {response.status_code} {response.reason}",
@@ -823,11 +842,14 @@ def main():
 
         # Get credentials after breaking changes warning
         print("🔐 Setting up Confluent Cloud authentication...")
-        global user_email, user_password, auth_token
-        user_email, user_password = get_credentials_input()
+        global user_email, user_password, auth_token, cloud_api_key, cloud_api_secret, is_api_key_auth
+        cred1, cred2 = get_credentials_input()
 
-        # Get initial auth token
-        auth_token = get_auth_token(base_url, user_email, user_password)
+        if is_api_key_auth:
+            cloud_api_key, cloud_api_secret = cred1, cred2
+        else:
+            user_email, user_password = cred1, cred2
+            auth_token = get_auth_token(base_url, user_email, user_password)
 
         print("Fetching Legacy connector's status...")
         status = get_connector_status(base_url, env, lkc, connector_name)
