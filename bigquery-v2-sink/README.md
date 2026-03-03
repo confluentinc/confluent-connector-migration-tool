@@ -50,11 +50,21 @@ export PASSWORD="your-password"
 ⚠️ **Security Note**: Environment variables may be visible in process lists and command history.
 
 #### Option 2: Credentials File (RECOMMENDED)
-Create a JSON file with your credentials:
+Create a JSON file with your credentials. Two formats are supported:
+
+**Email/Password format:**
 ```json
 {
   "email": "your-email@example.com",
   "password": "your-password"
+}
+```
+
+**Cloud API Key format (recommended for SSO users):**
+```json
+{
+  "api_key": "your-cloud-api-key",
+  "api_secret": "your-cloud-api-secret"
 }
 ```
 
@@ -67,7 +77,7 @@ Use a Confluent Cloud API Key and Secret. This is the recommended option for SSO
 **Generate via Confluent Cloud UI:**
 1. Log in to [Confluent Cloud](https://confluent.cloud)
 2. Go to **Administration → API Keys → Add API key**
-3. Choose the appropriate scope
+3. Choose **Cloud resource management** as the scope
 4. Copy the generated **Key** and **Secret**
 
 **Generate via Confluent CLI:**
@@ -165,10 +175,20 @@ python3 migrate-to-bq-v2-sink.py \
 
 ## Example Credentials File
 
-Create a file named `credentials.json`:
+Create a file named `credentials.json` in one of two formats:
+
+**Email/Password:**
 ```json
 {
   "email": "user@example.com",
   "password": "your-password"
+}
+```
+
+**Cloud API Key:**
+```json
+{
+  "api_key": "your-cloud-api-key",
+  "api_secret": "your-cloud-api-secret"
 }
 ```
