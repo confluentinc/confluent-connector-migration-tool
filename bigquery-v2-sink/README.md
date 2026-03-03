@@ -40,7 +40,7 @@ The tool will show the current status of your BigQuery Legacy sink connector.
 Fetch the environment id and cluster ID from your Kafka cluster's URL in Confluent Cloud.
 
 ### 3. Set Credentials
-The tool supports three methods for providing your Confluent Cloud credentials:
+The tool supports four methods for providing your Confluent Cloud credentials:
 
 #### Option 1: Environment Variables
 ```bash
@@ -50,7 +50,9 @@ export PASSWORD="your-password"
 ⚠️ **Security Note**: Environment variables may be visible in process lists and command history.
 
 #### Option 2: Credentials File (RECOMMENDED)
-Create a JSON file with your credentials:
+Create a JSON file with your credentials. Two formats are supported:
+
+**Email/Password format:**
 ```json
 {
   "email": "your-email@example.com",
@@ -58,8 +60,38 @@ Create a JSON file with your credentials:
 }
 ```
 
+**Cloud API Key format (recommended for SSO users):**
+```json
+{
+  "api_key": "your-cloud-api-key",
+  "api_secret": "your-cloud-api-secret"
+}
+```
+
 #### Option 3: Secure Input
 Enter credentials interactively when prompted. The password will be hidden when typing.
+
+#### Option 4: Cloud API Key
+Use a Confluent Cloud API Key and Secret. This is the recommended option for SSO users since it does not expire during a migration run.
+
+**Generate via Confluent Cloud UI:**
+1. Log in to [Confluent Cloud](https://confluent.cloud)
+2. Go to **Administration → API Keys → Add API key**
+3. Choose **Cloud resource management** as the scope
+4. Copy the generated **Key** and **Secret**
+
+**Generate via Confluent CLI:**
+```bash
+# Log in first (supports SSO)
+confluent login
+
+# Create a Cloud API key
+confluent api-key create --resource cloud
+
+# The output will contain your Key and Secret
+```
+
+When prompted by the tool, enter the Key as the **Cloud API Key** and the Secret as the **Cloud API Secret**.
 
 ### 4. Run the Migration Tool
 ```bash
@@ -143,10 +175,20 @@ python3 migrate-to-bq-v2-sink.py \
 
 ## Example Credentials File
 
-Create a file named `credentials.json`:
+Create a file named `credentials.json` in one of two formats:
+
+**Email/Password:**
 ```json
 {
   "email": "user@example.com",
   "password": "your-password"
+}
+```
+
+**Cloud API Key:**
+```json
+{
+  "api_key": "your-cloud-api-key",
+  "api_secret": "your-cloud-api-secret"
 }
 ```
